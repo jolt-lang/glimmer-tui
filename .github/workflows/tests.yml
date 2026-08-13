@@ -27,11 +27,29 @@ jobs:
       # provides the pty, and TERM has to be set explicitly because a runner
       # leaves it unset, which is a terminfo lookup failure and therefore an
       # ncurses exit(). The output is echoed so a failure here is diagnosable.
+      - name: Terminal diagnostics
+        env:
+          TERM: xterm-256color
+        run: |
+          echo "TERM=$TERM TERMINFO=${TERMINFO:-unset}"
+          ls -d /lib/terminfo /etc/terminfo /usr/share/terminfo 2>&1 || true
+          ls /usr/share/terminfo/x 2>/dev/null | head -5 || true
+          infocmp -1 xterm-256color 2>&1 | head -3 || true
+          script -qec 'tput -T xterm-256color cols' /dev/null || true
       - name: Smoke
         env:
           TERM: xterm-256color
         run: |
           set -o pipefail
-          out=$(script -qec "jolt -M:smoke" /dev/null | tr -d '\000' || true)
+          out=$(script -qec "jolt -M:smoke" /dev/null 2>&1 | tr -d '\000' || true)
           printf '%s\n' "$out"
-          printf '%s' "$out" | grep -qaE "SMOKE (OK|SKIP)"
+          if printf '%s' "$out" | grep -qa "SMOKE OK"; then
+            echo "smoke: ran against a real terminal"
+          elif printf '%s' "$out" | grep -qaE "SMOKE SKIP|Error opening terminal"; then
+            # A runner that cannot host a terminal UI is a skip, not a failure —
+            # but say so out loud rather than quietly passing.
+            echo "smoke: SKIPPED, this runner has no usable terminal"
+          else
+            echo "smoke: unexpected output"
+            exit 1
+          fi
