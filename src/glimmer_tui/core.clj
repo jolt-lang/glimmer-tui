@@ -129,6 +129,13 @@
       (w/touch!)))
   nil)
 
+(defn usable-terminal?
+  "Whether ui/run would be able to take over the terminal: stdout is a tty and
+  TERM names something terminfo knows. Code that must not die on a headless
+  machine — a smoke test, or an app with a batch mode — can check first."
+  []
+  (curses/usable?))
+
 (defn quit!
   "Ask the event loop to stop. Safe from any thread and from a handler."
   []

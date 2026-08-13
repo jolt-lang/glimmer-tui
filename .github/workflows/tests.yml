@@ -20,7 +20,15 @@ jobs:
           echo "$HOME/.jolt" >> "$GITHUB_PATH"
       - name: Test
         run: JOLT_PWD="$PWD" jolt -M:test
-      # The suite is headless; this covers the ncurses path itself, and skips
-      # cleanly if the runner gives us no pty.
+      # The suite is headless; this covers the ncurses path itself. `script`
+      # provides the pty, and TERM has to be set explicitly because a runner
+      # leaves it unset, which is a terminfo lookup failure and therefore an
+      # ncurses exit(). The output is echoed so a failure here is diagnosable.
       - name: Smoke
-        run: JOLT_PWD="$PWD" script -qec "jolt -M:smoke" /dev/null | tr -d '\000' | grep -E "SMOKE (OK|SKIP)"
+        env:
+          TERM: xterm-256color
+        run: |
+          set -o pipefail
+          out=$(script -qec "jolt -M:smoke" /dev/null | tr -d '\000' || true)
+          printf '%s\n' "$out"
+          printf '%s' "$out" | grep -qaE "SMOKE (OK|SKIP)"

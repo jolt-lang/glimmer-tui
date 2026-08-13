@@ -12,13 +12,15 @@
     focus, dispatch and the handler round trip through the reconciler.
 
   Exit 0 printing SMOKE OK means library load, locale, initscr, layout, paint,
-  input dispatch and a clean endwin all worked. Needs a tty: under a pipe it
-  prints SMOKE SKIP and exits 0, since there is nothing to test."
+  input dispatch and a clean endwin all worked.
+
+  Needs a real terminal. Under a pipe, or on a CI runner whose pty has no usable
+  TERM, it prints SMOKE SKIP and exits 0: there is nothing to test there, and
+  ncurses would exit the process rather than report an error."
   (:require [glimmer.backend :as b]
             [glimmer.core :as ui]
             [glimmer.ratom :as r]
-            [glimmer-tui.core :as tui]
-            [glimmer-tui.ffi :as c]))
+            [glimmer-tui.core :as tui]))
 
 (def ticks (r/atom 0))
 (def presses (r/atom 0))
@@ -42,8 +44,9 @@
     (b/schedule (fn [] (tui/press! 10)))))
 
 (defn -main [& _]
-  (if (zero? (c/isatty 1))
-    (println "SMOKE SKIP (no tty)")
+  (if-not (tui/usable-terminal?)
+    (println (str "SMOKE SKIP (no usable terminal, TERM="
+                  (or (System/getenv "TERM") "unset") ")"))
     (try
       (drive!)
       (ui/run app :auto-quit-ms 1500)
