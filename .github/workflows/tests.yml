@@ -36,6 +36,9 @@ jobs:
           ls /usr/share/terminfo/x 2>/dev/null | head -5 || true
           infocmp -1 xterm-256color 2>&1 | head -3 || true
           script -qec 'tput -T xterm-256color cols' /dev/null || true
+          # initscr needs a terminal on stdin as well as stdout; find out what
+          # `script` actually hands the child here.
+          script -qec 'python3 -c "import os; print(\"isatty 0/1/2:\", [os.isatty(i) for i in (0,1,2)])"' /dev/null || true
       - name: Smoke
         env:
           TERM: xterm-256color
