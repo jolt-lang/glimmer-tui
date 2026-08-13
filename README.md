@@ -170,4 +170,12 @@ tty. `jolt smoke` covers the part that genuinely needs a terminal.
 Early. The widget set is small and there is no scrolling viewport yet, so a UI
 taller than the terminal is clipped rather than scrolled. Colour is the 8-colour
 indexed palette. The reconciler, layout, focus and input paths are covered by the
-headless suite; the ncurses path is covered by the smoke test.
+headless suite; the ncurses path is covered by `jolt smoke`.
+
+Two things to know about hostile environments. `usable-terminal?` checks the
+three conditions that normally stop a UI from starting (no tty, no TERM, no
+terminfo entry), and `ui/run` raises rather than proceeding when one of them
+fails. It cannot promise more than that: `initscr` reports failure by calling
+`exit()`, and a GitHub Actions runner manages to fail it even with a pty on all
+three descriptors, a terminfo entry present and a window size set. That is why CI
+runs the headless suite and reports the smoke step as skipped there.

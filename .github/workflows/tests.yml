@@ -27,18 +27,6 @@ jobs:
       # provides the pty, and TERM has to be set explicitly because a runner
       # leaves it unset, which is a terminfo lookup failure and therefore an
       # ncurses exit(). The output is echoed so a failure here is diagnosable.
-      - name: Terminal diagnostics
-        env:
-          TERM: xterm-256color
-        run: |
-          echo "TERM=$TERM TERMINFO=${TERMINFO:-unset}"
-          ls -d /lib/terminfo /etc/terminfo /usr/share/terminfo 2>&1 || true
-          ls /usr/share/terminfo/x 2>/dev/null | head -5 || true
-          infocmp -1 xterm-256color 2>&1 | head -3 || true
-          script -qec 'tput -T xterm-256color cols' /dev/null || true
-          # initscr needs a terminal on stdin as well as stdout; find out what
-          # `script` actually hands the child here.
-          script -qec 'python3 -c "import os; print(\"isatty 0/1/2:\", [os.isatty(i) for i in (0,1,2)])"' /dev/null || true
       - name: Smoke
         env:
           TERM: xterm-256color
@@ -48,6 +36,12 @@ jobs:
           COLUMNS: "80"
           LINES: "24"
         run: |
+          # Known limitation: on a GitHub runner newterm fails even though the
+          # pty covers all three descriptors, terminfo has the entry, and the
+          # size is set — so this step reports a skip there and the ncurses path
+          # is covered by running `jolt smoke` locally. The step stays because it
+          # would catch a missing libncursesw or a broken binding on any runner
+          # that CAN host a terminal.
           set -o pipefail
           out=$(script -qec "jolt -M:smoke" /dev/null 2>&1 | tr -d '\000' || true)
           printf '%s\n' "$out"
