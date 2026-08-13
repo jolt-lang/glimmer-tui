@@ -85,13 +85,27 @@
 
 (defn- usable-term? []
   (let [t (System/getenv "TERM")]
+    ;; "dumb" has a terminfo entry, so setupterm would accept it, but it has no
+    ;; cursor addressing and cannot run a UI.
     (boolean (and t (not= "" t) (not= "dumb" t)))))
 
-(defn usable?
-  "Whether start! can take over the terminal: stdout is a tty and TERM names
-  something terminfo can plausibly look up."
+(defn- terminfo-ok?
+  "Whether ncurses can actually load a terminfo entry for $TERM. Checking the
+  name is not enough: a runner may export TERM=xterm-256color while shipping
+  none of the terminfo database, and that is an exit(), not an error return."
   []
-  (and (tty?) (usable-term?)))
+  (let [errret (ffi/alloc 4)]
+    (try
+      (ffi/write errret :int 0 0)
+      (zero? (c/setupterm ffi/null 1 errret))
+      (catch :default _ false)
+      (finally (ffi/free errret)))))
+
+(defn usable?
+  "Whether start! can take over the terminal: stdout is a tty, TERM names
+  something usable, and ncurses can load its terminfo entry."
+  []
+  (and (tty?) (usable-term?) (terminfo-ok?)))
 
 (defn start!
   "Put the terminal into raw, keypad, mouse-reporting mode and return the stdscr
@@ -105,6 +119,10 @@
     (throw (ex-info (str "glimmer-tui: TERM is "
                          (if-let [t (System/getenv "TERM")] (pr-str t) "unset")
                          ", cannot start a UI")
+                    {:term (System/getenv "TERM")})))
+  (when-not (terminfo-ok?)
+    (throw (ex-info (str "glimmer-tui: no terminfo entry for TERM="
+                         (System/getenv "TERM") ", cannot start a UI")
                     {:term (System/getenv "TERM")})))
   ;; category 0 is LC_ALL on macOS and LC_CTYPE on glibc; 6 is LC_ALL on glibc
   ;; and an unknown category (harmless NULL) on macOS. Between them, the ctype

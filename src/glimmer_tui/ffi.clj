@@ -51,6 +51,11 @@
 ;; layout is computed in jolt, so ncurses windows would buy nothing over one
 ;; full-screen buffer, and a single window keeps the diffing in doupdate.
 (ffi/defcfn initscr  "initscr"  [] :pointer)
+;; setupterm(term, filedes, errret) is the only way to ask ncurses "would
+;; initscr work?" without risking the process: given a non-NULL errret it
+;; RETURNS ERR for a missing terminfo entry, where initscr would print
+;; "Error opening terminal" and exit. A NULL term means read $TERM.
+(ffi/defcfn setupterm "setupterm" [:pointer :int :pointer] :int)
 (ffi/defcfn endwin   "endwin"   [] :int)
 (ffi/defcfn isendwin "isendwin" [] :int)
 ;; raw rather than cbreak: raw also turns off ISIG, so ctrl-c arrives as key 3
