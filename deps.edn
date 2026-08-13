@@ -1,0 +1,36 @@
+{:paths ["src"]
+
+ ;; glimmer-tui is a backend for glimmer: glimmer owns the reactive core (ratom,
+ ;; component model, reconciler) and knows nothing about any toolkit; this
+ ;; project supplies the terminal widgets, layout, painting and the input loop,
+ ;; and registers them through glimmer.backend.
+ :deps {jolt-lang/glimmer {:git/url "https://github.com/jolt-lang/glimmer"
+                           :git/tag "v0.1.0"
+                           :git/sha "5581c331c51aff989259b9e8e92ec920fe5e6741"}}
+
+ ;; ncurses with wide-character support, bound natively via jolt.ffi.
+ ;;
+ ;; The system library is tried FIRST on both platforms, because the whole point
+ ;; of a terminal backend is running on a box you did not provision: macOS ships
+ ;; ncurses 6.0 in the dyld shared cache (wide-char, mouse and terminfo symbols
+ ;; all present, verified) and every Linux distribution ships libncursesw.so.6.
+ ;; Homebrew's keg-only ncurses is listed after it as a fallback for anyone who
+ ;; has installed a newer build. Only the portable ncurses-6.0 subset is bound,
+ ;; so either library works: no extended-colour (6.1+) entry points are used.
+ :jolt/native [{:name "ncursesw"
+                :darwin ["libncurses.dylib"
+                         "/opt/homebrew/opt/ncurses/lib/libncursesw.6.dylib"
+                         "/usr/local/opt/ncurses/lib/libncursesw.6.dylib"]
+                :linux  ["libncursesw.so.6" "libncursesw.so" "libncurses.so.6"]}]
+
+ ;; Each runnable has its own alias with :main-opts (jolt's -M:alias form needs
+ ;; main-opts). Tasks are thin wrappers so you can run `jolt counter`, etc.
+ :aliases {:test    {:extra-paths ["test"]     :main-opts ["-m" "glimmer-tui.test-runner"]}
+           :counter {:extra-paths ["examples"] :main-opts ["-m" "glimmer-tui.counter"]}
+           :todo    {:extra-paths ["examples"] :main-opts ["-m" "glimmer-tui.todo"]}
+           :smoke   {:extra-paths ["examples"] :main-opts ["-m" "glimmer-tui.smoke"]}}
+
+ :tasks {test    "jolt -M:test"
+         counter "jolt -M:counter"
+         todo    "jolt -M:todo"
+         smoke   "jolt -M:smoke"}}
