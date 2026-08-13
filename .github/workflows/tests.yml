@@ -42,6 +42,11 @@ jobs:
       - name: Smoke
         env:
           TERM: xterm-256color
+          # A pty that `script` creates in a job has no window size, and a screen
+          # of 0x0 is the one remaining way newterm can fail here. ncurses reads
+          # these two as the size when the ioctl gives it nothing.
+          COLUMNS: "80"
+          LINES: "24"
         run: |
           set -o pipefail
           out=$(script -qec "jolt -M:smoke" /dev/null 2>&1 | tr -d '\000' || true)
