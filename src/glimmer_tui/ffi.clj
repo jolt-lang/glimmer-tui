@@ -25,7 +25,8 @@
   (Linux): the per-button shift is 6 bits versus 5. The BUTTON1 bits are
   identical in both (released 1, pressed 2, clicked 4), which is why this
   backend only interprets button 1."
-  (:require [jolt.ffi :as ffi]))
+  (:require [clojure.string :as str]
+            [jolt.ffi :as ffi]))
 
 ;; --- libc --------------------------------------------------------------------
 ;; A UTF-8 ctype locale must be set before initscr, or ncursesw renders
@@ -102,6 +103,12 @@
 ;; what keeps a glimmer UI transparent over the user's colour scheme.
 (ffi/defcfn use-default-colors "use_default_colors" [] :int)
 (ffi/defcfn init-pair          "init_pair"          [:int :int :int] :int)
+;; How many colours the terminal actually claims. The COLORS global is a
+;; variable rather than a function, and reading a library global through the FFI
+;; is more trouble than asking terminfo the same question — which is what
+;; ncurses does to set COLORS in the first place. Valid once initscr (or
+;; setupterm) has run.
+(ffi/defcfn tigetnum           "tigetnum"           [:string] :int)
 
 ;; --- mouse -------------------------------------------------------------------
 (ffi/defcfn mousemask     "mousemask"     [:ulong :pointer] :ulong)
@@ -158,6 +165,23 @@
 (def BUTTON1-RELEASED 1)
 (def BUTTON1-PRESSED  2)
 (def BUTTON1-CLICKED  4)
+
+;; Higher buttons are not: NCURSES_MOUSE_MASK(b, m) shifts by (b-1) * SHIFT, and
+;; SHIFT is 5 under mouse version 1 (what macOS ships) and 6 under version 2
+;; (Linux). The wheel arrives as buttons 4 and 5, so those masks have to be
+;; computed for the platform rather than hard-coded. Version 1 predates button 5
+;; entirely; a wheel-down there reports nothing, which is why scrolling by wheel
+;; is one-directional on stock macOS ncurses and the keyboard bindings are not
+;; optional.
+(def ^:private mouse-shift
+  (if (str/includes? (str/lower-case (or (System/getProperty "os.name") "")) "mac") 5 6))
+
+(defn- mouse-mask [button bits] (bit-shift-left bits (* (dec button) mouse-shift)))
+
+(def BUTTON4-PRESSED (mouse-mask 4 2))
+(def BUTTON4-RELEASED (mouse-mask 4 1))
+(def BUTTON5-PRESSED (mouse-mask 5 2))
+(def BUTTON5-RELEASED (mouse-mask 5 1))
 
 ;; MEVENT field offsets (see the namespace docstring).
 (def MEVENT-SIZE 24)
