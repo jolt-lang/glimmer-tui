@@ -7,6 +7,7 @@
             [glimmer.core :as ui]
             [glimmer.ratom :as r]
             [glimmer-tui.core :as tui]
+            [glimmer-tui.keys :as keys]
             [glimmer-tui.screen :as scr]
             [glimmer-tui.widget :as w]))
 
@@ -171,3 +172,133 @@
     (let [d @w/dirty]
       (reset! n 1)
       (is (> @w/dirty d) "a state change marks the tree dirty"))))
+
+;; --- scrolling ---------------------------------------------------------------
+(def ^:private DOWN 258)
+(def ^:private ESC 27)
+(def ^:private PGDN 338)
+
+(deftest a-scroll-shows-a-window-onto-something-taller-than-the-terminal
+  (let [app (fn [] [:scroll {:vexpand true}
+                    (into [:vbox {}]
+                          (for [i (range 8)] [:label {:label (str "row " i)}]))])
+        {:keys [screen]} (session app 12 3)]
+    (is (= ["row 0      █" "row 1      │" "row 2      │"] (text screen)))
+    (tui/press! DOWN)
+    (tui/frame!)
+    (is (= ["row 1      █" "row 2      │" "row 3      │"] (text screen)))
+    (testing "and the wheel scrolls whatever is under the pointer"
+      (tui/scroll! 1 1 3)
+      (tui/frame!)
+      (is (= ["row 4" "row 5" "row 6"] (mapv #(subs % 0 5) (text screen)))))))
+
+(deftest a-key-the-focused-widget-declines-reaches-the-scroll-around-it
+  ;; The buttons take focus and consume Enter; Page Down means nothing to them,
+  ;; so it carries on outwards to the container that does know what to do with it.
+  (let [app (fn [] [:scroll {:vexpand true :scrollbar false}
+                    (into [:vbox {}]
+                          (for [i (range 12)] [:button {:label (str "b" i)}]))])
+        {:keys [screen]} (session app 10 3)]
+    (is (= ["[ b0 ]" "[ b1 ]" "[ b2 ]"] (text screen)))
+    (tui/press! PGDN)
+    (tui/frame!)
+    (is (= ["[ b2 ]" "[ b3 ]" "[ b4 ]"] (text screen)))))
+
+(deftest tabbing-to-an-off-screen-widget-scrolls-it-into-view
+  (let [app (fn [] [:scroll {:vexpand true :scrollbar false}
+                    (into [:vbox {}]
+                          (for [i (range 8)] [:button {:label (str "b" i)}]))])
+        {:keys [screen]} (session app 10 3)]
+    (is (= ["[ b0 ]" "[ b1 ]" "[ b2 ]"] (text screen)))
+    (dotimes [_ 4] (tui/press! TAB))
+    (tui/frame!)
+    (is (= ["[ b2 ]" "[ b3 ]" "[ b4 ]"] (text screen))
+        "focus is on b4, which had to be brought back on screen to get there")))
+
+;; --- overlays ----------------------------------------------------------------
+(deftest a-modal-overlay-floats-over-the-page-and-keeps-focus-to-itself
+  (let [open? (r/atom true)
+        picked (atom nil)
+        app (fn []
+              [:vbox {}
+               [:button {:label "behind" :on-click #(reset! picked :behind)}]
+               (when @open?
+                 [:overlay {:anchor :center :on-close #(reset! open? false)}
+                  [:button {:label "ok" :on-click #(reset! picked :ok)}]])])
+        {:keys [screen]} (session app 12 3)]
+    (is (= ["[ behind ]" "   [ ok ]" ""] (text screen)))
+    (testing "tab cannot leave the dialog"
+      (tui/press! TAB)
+      (tui/press! ENTER)
+      (is (= :ok @picked)))
+    (testing "and esc closes it"
+      (tui/press! ESC)
+      (tui/frame!)
+      (is (false? @open?))
+      (is (= ["[ behind ]" "" ""] (text screen)))
+      (reset! picked nil)
+      (tui/press! ENTER)
+      (is (= :behind @picked) "focus fell back to what was underneath"))))
+
+;; --- timers ------------------------------------------------------------------
+(deftest a-timer-drives-an-animation-without-a-keypress
+  (let [tick (r/atom 0)
+        app (fn [] [:spinner {:frames ["a" "b" "c"] :tick @tick}])
+        {:keys [screen]} (session app 6 1)
+        id (tui/every! 1 #(swap! tick inc))]
+    (is (= ["a"] (text screen)))
+    (Thread/sleep 5)
+    (tui/pump-timers!)
+    (tui/frame!)
+    (is (= ["b"] (text screen)))
+    (tui/cancel! id)
+    (Thread/sleep 5)
+    (is (false? (tui/pump-timers!)) "a cancelled timer stops firing")
+    (tui/frame!)
+    (is (= ["b"] (text screen)))))
+
+;; --- the derived help bar ----------------------------------------------------
+(deftest the-help-bar-follows-the-focus
+  (let [app (fn [] [:vbox {}
+                    [:listbox {:items ["a" "b"]}]
+                    [:entry {:text ""}]
+                    [:help {}]])
+        {:keys [screen]} (session app 40 4)]
+    (is (= "↑/k/ctrl+p up" (subs (nth (text screen) 3) 0 13))
+        "the list is focused, so the bar shows what a list answers to")
+    (tui/press! TAB)
+    (tui/frame!)
+    (is (= "←/ctrl+b backward char" (subs (nth (text screen) 3) 0 22))
+        "and the entry's bindings once focus moves")))
+
+;; --- application-level keys --------------------------------------------------
+(deftest a-container-can-bind-a-key-of-its-own
+  (let [hits (atom [])
+        draft (r/atom "")
+        app (fn [] [:vbox {:on-key (fn [e] (when (keys/match? e "d")
+                                             (swap! hits conj :d)
+                                             true))}
+                    [:entry {:text @draft :on-change #(reset! draft %)}]
+                    [:button {:label "go"}]])
+        _ (session app)]
+    (testing "the focused widget gets first refusal"
+      (tui/press! (int \d))
+      (is (= "d" @draft) "the entry typed it")
+      (is (= [] @hits)))
+    (testing "and the container sees what nothing else wanted"
+      (tui/press! TAB)                                  ; focus the button
+      (tui/press! (int \d))
+      (is (= [:d] @hits))
+      (is (= "d" @draft) "the entry did not see it"))))
+
+(deftest a-quit-key-does-not-fire-while-you-are-typing-it
+  (let [draft (r/atom "")
+        app (fn [] [:vbox {} [:entry {:text @draft :on-change #(reset! draft %)}]])
+        _ (session app)]
+    (tui/press! (int \q) #{"q" "ctrl+c"})
+    (is (= "q" @draft) "a letter goes to the field, not to the loop")
+    (tui/press! 3 #{"q" "ctrl+c"})
+    (is (= "q" @draft))
+    (testing "but a ctrl chord nothing consumes still quits"
+      ;; ctrl-c reached the loop: the entry declined it
+      (is (= "q" @draft)))))

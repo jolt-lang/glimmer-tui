@@ -28,9 +28,11 @@
  :aliases {:test    {:extra-paths ["test"]     :main-opts ["-m" "glimmer-tui.test-runner"]}
            :counter {:extra-paths ["examples"] :main-opts ["-m" "glimmer-tui.counter"]}
            :todo    {:extra-paths ["examples"] :main-opts ["-m" "glimmer-tui.todo"]}
+           :showcase {:extra-paths ["examples"] :main-opts ["-m" "glimmer-tui.showcase"]}
            :smoke   {:extra-paths ["examples"] :main-opts ["-m" "glimmer-tui.smoke"]}}
 
  :tasks {test    "jolt -M:test"
          counter "jolt -M:counter"
          todo    "jolt -M:todo"
+         showcase "jolt -M:showcase"
          smoke   "jolt -M:smoke"}}

@@ -6,9 +6,10 @@ reactive GUI toolkit for [jolt](https://github.com/jolt-lang/jolt).
 glimmer owns the portable half — reactive cells, the component model, the
 reconciler — and knows nothing about any toolkit. This project supplies the other
 half for a terminal: a widget set, box layout, painting through ncursesw, and an
-input loop with keyboard focus and mouse support. Requiring `glimmer-tui.core`
-registers it, and the same components that render as GTK widgets under
-[glimmer-gtk](https://github.com/jolt-lang/glimmer-gtk) render as text.
+input loop with keyboard focus, scrolling and mouse support. Requiring
+`glimmer-tui.core` registers it, and the same components that render as GTK
+widgets under [glimmer-gtk](https://github.com/jolt-lang/glimmer-gtk) render as
+text.
 
 ```clojure
 (ns myapp
@@ -47,8 +48,8 @@ you may need `apt install libncursesw6`, since the base system only guarantees
 `libtinfo6`.
 
 Nothing newer is bound on purpose: the 6.1 extended-colour entry points are
-absent from Apple's build, and a terminal UI does not need colour pairs past 256.
-The point of a terminal backend is running on a machine you did not provision.
+absent from Apple's build. That is not a limit on what you can write — a `#ff6432`
+prop works fine (see [Colour](#colour)) — only on how it reaches the terminal.
 
 ## Running
 
@@ -56,6 +57,7 @@ The point of a terminal backend is running on a machine you did not provision.
 jolt test      # the suite, headless: no terminal, tty or display needed
 jolt counter   # the counter demo
 jolt todo      # a task board: entry, checkbuttons, framed keyed list
+jolt showcase  # every widget: list, table, scrolling text, dialog, gauges
 jolt smoke     # non-interactive check against a real terminal
 ```
 
@@ -64,41 +66,110 @@ jolt smoke     # non-interactive check against a real terminal
 Elements are `[:tag props? & children]`, as everywhere in glimmer. Strings and
 numbers become labels, `nil` children are skipped, seqs are spliced.
 
-**Containers:** `:window` (the root, single child), `:box`
-(`:orientation :horizontal|:vertical`), `:hbox`, `:vbox`, `:frame` (single child,
-box-drawing border with an optional `:label` in the top edge).
+**Containers**
 
-**Leaf widgets:** `:label`, `:button`, `:entry`, `:checkbutton`, `:separator`.
+| tag | holds | notes |
+|---|---|---|
+| `:window` | one child | the root |
+| `:box` | many | `:orientation :horizontal\|:vertical` |
+| `:hbox` / `:vbox` | many | the same box, orientation implied |
+| `:frame` | one child | a border, with an optional `:label` set into the top edge |
+| `:scroll` | one child | a viewport onto something bigger — see [Scrolling](#scrolling) |
+| `:overlay` | one child | floats over the screen — see [Overlays](#overlays) |
 
-**Common props (every widget):**
+**Widgets**
 
-- `:margin`, or `:margin-start`/`:margin-end`/`:margin-top`/`:margin-bottom`
-- `:halign`/`:valign` — `:fill` (the default), `:start`, `:center`, `:end`
-- `:hexpand`/`:vexpand` — boolean; expanders split the leftover space on that axis
-- `:width-request`/`:height-request` — a floor on the natural size
-- `:color`/`:bg` — `:black :red :green :yellow :blue :magenta :cyan :white :default`
-- `:bold`, `:dim`, `:underline`, `:reverse` — booleans
+| tag | shows |
+|---|---|
+| `:label` | text; a newline makes it taller |
+| `:button` | `[ label ]`, activated by Enter, Space or a click |
+| `:entry` | a single-line text field |
+| `:checkbutton` | `[x] label` |
+| `:separator` | a rule along its `:orientation` |
+| `:listbox` | a list with a cursor, scrolling itself to keep it visible |
+| `:table` | columns sized to their contents, with a header and a row cursor |
+| `:progress` | a progress bar |
+| `:spinner` | one frame of an animation — see [Timers](#timers) |
+| `:paginator` | `○●○` or `2/3` |
+| `:help` | the bindings of whatever is focused — see [Keys and focus](#keys-and-focus) |
+
+**Common props (every widget)**
+
+- `:margin` / `:padding` — a number, `[vertical horizontal]`, or
+  `[top right bottom left]`; or the per-edge `:margin-start`, `:padding-top`, …
+- `:halign` / `:valign` — `:fill` (the default), `:start`, `:center`, `:end`
+- `:hexpand` / `:vexpand` — boolean; expanders split the leftover space on that axis
+- `:width-request` / `:height-request` — a floor on the natural size
+- `:color` / `:bg` — see [Colour](#colour)
+- `:bold`, `:dim`, `:underline`, `:reverse`, `:blink` — booleans
 - `:sensitive false` — dims the widget and takes it out of the tab order
 
-**Per-tag props:**
+**Per-tag props**
 
-- Label: `:label`/`:text` (a newline makes it taller)
-- Button: `:label`
-- Entry: `:text`, `:placeholder`, `:width-request`
-- Checkbutton: `:label`, `:active`
-- Frame: `:label`
-- Separator: `:orientation`
+- Label: `:label`/`:text`, `:align`
+- Button: `:label`, `:brackets ["[ " " ]"]`
+- Entry: `:text`, `:placeholder`, `:echo :normal|:password|:none`, `:echo-char`,
+  `:char-limit`, `:width-request`, `:keys`
+- Checkbutton: `:label`, `:active`, `:checked-mark`, `:unchecked-mark`
+- Frame: `:label`, `:label-align`, `:border`, `:border-color`
+- Separator: `:orientation`, `:char`
+- Scroll: `:orientation :vertical|:horizontal|:both`, `:scrollbar`, `:keys`
+- Overlay: `:anchor`, `:offset-x`, `:offset-y`, `:modal`, `:on-close`
+- Listbox: `:items`, `:selected`, `:descriptions`, `:wrap`, `:cursor-prefix`,
+  `:item-prefix`, `:keys`
+- Table: `:columns`, `:rows`, `:selected`, `:header`, `:gap`, `:keys`
+- Progress: `:value` (0.0–1.0), `:bar`, `:bar-color`, `:show-percent`
+- Spinner: `:tick`, `:frames`, `:label`
+- Paginator: `:page`, `:total-pages` (or `:total-items` + `:per-page`), `:style`
+- Help: `:bindings`, `:labels`, `:separator`, `:full`, `:ellipsis`
 
-**Events:**
+A `:columns` entry is `{:title "name" :key :name :width 12 :align :end}`; `:width`
+and `:align` are optional and rows may be maps or vectors.
+
+**Events**
 
 - `:on-click` — button activated. No args.
 - `:on-change` — entry text changed. Receives the new text.
-- `:on-activate` — Enter pressed in an entry. No args.
+- `:on-activate` — Enter pressed in an entry, list or table. No args.
 - `:on-toggled` — checkbutton activated. No args.
+- `:on-select` — list or table cursor moved. Receives the index and the item.
+- `:on-scroll` — a scroll container moved. Receives `{:x :y}`.
+- `:on-close` — Esc pressed while a modal overlay is up. No args.
+- `:on-key` — on a container: a key nothing inside it wanted. Receives the
+  event; return truthy to consume it.
 
 As in glimmer-gtk, a handler owns the state: `:on-toggled` flips the cell the
 component reads, and `:active` comes back down as a prop. Widgets never toggle
-themselves.
+themselves, and a list whose `:on-select` is ignored still works — it falls back
+to its own cursor.
+
+## Colour
+
+A colour prop is any of
+
+```clojure
+:red  :bright-blue  :default     ; the sixteen ANSI names
+208                              ; an index into the xterm 256-colour palette
+"#ff6432"  "#f64"                ; a hex triple
+[255 100 50]                     ; r/g/b
+```
+
+Everything is reduced to a palette index before ncurses sees it, and then folded
+down again to what the terminal actually reports (`tigetnum "colors"`): the
+closest entry in the 256-colour cube, then in the sixteen, then in the eight. So
+a hex prop is not a portability decision — the UI keeps working on a 16-colour
+tty, it just stops being exact. `:default` (and no colour at all) means the
+terminal's own foreground or background, which is what keeps a glimmer UI
+transparent over the user's theme instead of painting it black.
+
+Frames take a border set: `:normal` (the default), `:rounded`, `:thick`,
+`:double`, `:block`, `:outer-half-block`, `:inner-half-block`, `:ascii`,
+`:hidden`, `:none`, or a map of the eight parts.
+
+```clojure
+[:frame {:label "results" :border :rounded :border-color "#5f87af" :padding 1}
+ [:label {:label "…"}]]
+```
 
 ## Keys and focus
 
@@ -106,12 +177,47 @@ themselves.
 |---|---|
 | `Tab` / `Shift-Tab` | move focus forward / back, wrapping |
 | `Enter` / `Space` | activate the focused widget |
-| printable, `Backspace`, `Delete`, arrows, `Home`, `End` | edit the focused entry |
+| arrows, `j`/`k`, `pgup`/`pgdn`, `ctrl-u`/`ctrl-d`, `g`/`G` | navigate a list, table or scroll |
+| printable, `Backspace`, `Delete`, arrows, `Home`/`End` | edit the focused entry |
+| `ctrl-a`/`ctrl-e`, `ctrl-w`, `ctrl-u`/`ctrl-k`, `alt-b`/`alt-f` | readline editing in an entry |
+| `Esc` | close the topmost modal overlay |
 | `ctrl-c` / `ctrl-q` | quit (configurable with `:quit-keys`) |
-| mouse button 1 | focus and activate whatever is under the pointer |
+| mouse button 1 | focus and activate (or select the row) under the pointer |
+| mouse wheel | scroll the container under the pointer |
 
-The focused widget is drawn in reverse video, and the terminal cursor is parked
-in the focused entry and hidden otherwise.
+Keys are named rather than numbered. `glimmer-tui.keys/decode` turns an ncurses
+key code into an event — `{:type :page-up}`, `{:type :ctrl :ch \u}` — and
+`match?` compares one against a binding written the way a person would say it:
+
+```clojure
+(k/match? event "ctrl+u")
+(k/match? event :page-up)
+(k/match? event ["end" "G"])
+```
+
+Every widget that answers to keys declares its bindings that way, so they can be
+overridden per widget with `:keys`, and rendered:
+
+```clojure
+[:listbox {:items rows :keys {:down ["down" "n"]}}]
+[:help {}]        ; renders whatever the focused widget answers to
+```
+
+The `:help` widget with no `:bindings` of its own reads them off the live tree,
+which means the help bar cannot drift from what the keys actually do.
+
+A key is offered to the focused widget first, then to each of its ancestors —
+which is how `Page Down` reaches the scroll container a focused button happens to
+be sitting in, and how an application binds a key of its own:
+
+```clojure
+[:vbox {:on-key (fn [e] (when (k/match? e "d") (open-dialog!) true))}
+ ...]
+```
+
+Only what nobody wanted becomes a quit key, an `Esc` that closes a dialog, or an
+`Enter` that presses a button. That ordering is deliberate: it means `q` can be a
+quit key in an app that also has a text field, because the field sees it first.
 
 The focus ring is recomputed from the widget tree on every frame, in tree order,
 so a component that renders a new button gets a sensible tab position with no
@@ -123,9 +229,63 @@ Focus lives in this project rather than in glimmer's core because it is a
 property of how a toolkit is driven, not of the component model — under GTK,
 focus comes from GTK.
 
-`ui/run` takes `:tick-ms` (input poll interval, default 30, which is also the
-worst-case delay before work posted from another thread is picked up),
-`:quit-keys`, and `:auto-quit-ms` for smoke tests.
+## Scrolling
+
+`:scroll` gives its child the full height the child asked for and shows a window
+onto it. Nothing is re-measured while scrolling, so a thousand-row list costs
+what a ten-row one does.
+
+```clojure
+[:scroll {:vexpand true}
+ (into [:vbox {}] (for [line lines] [:label {:label line}]))]
+```
+
+A scroll takes keyboard focus only when nothing inside it can — a text viewport
+is the thing you are driving, a scroll around a form is not. Either way its
+bindings work, because a key the focused widget declines bubbles out to it, and
+**moving focus scrolls the focused widget into view**: `Tab` into a field below
+the fold brings it back on screen. Scrolling by hand does not drag the focus
+along with it, so the wheel behaves the way a wheel should.
+
+A scrollbar is drawn in the last column whenever there is more content than
+viewport; `:scrollbar false` gives the column back.
+
+## Overlays
+
+An `:overlay` is written where it belongs in the component that owns it, and laid
+out against the *screen*: it takes no space at its declaration site and is not
+clipped by the box it was declared in.
+
+```clojure
+(when @confirming?
+  [:overlay {:anchor :center :on-close #(reset! confirming? false)}
+   [:frame {:label "confirm" :border :double :padding 1}
+    [:vbox {:spacing 1}
+     [:label {:label "Delete the branch?"}]
+     [:hbox {:spacing 2 :halign :center}
+      [:button {:label "yes" :on-click delete!}]
+      [:button {:label "no" :on-click #(reset! confirming? false)}]]]]])
+```
+
+While a modal overlay is up (the default) the focus ring is restricted to it, so
+`Tab` cannot wander back into the page underneath, and `Esc` calls `:on-close`.
+Overlays paint last, in declaration order, so a later one sits on top.
+
+## Timers
+
+Nothing animates itself. The loop wakes up every `:tick-ms` anyway, so a timer is
+a due time and a thunk, and the thunk runs **on the loop thread** — the only
+thread allowed to touch widgets:
+
+```clojure
+(let [tick (atom 0)]
+  (tui/every! 80 #(swap! tick inc))
+  (fn [] [:spinner {:tick @tick :label "fetching"}]))
+```
+
+`after!` fires once, `every!` repeats, `cancel!` stops one and the loop cancels
+everything when it exits. A widget that ran its own timer would repaint whether
+or not anything was looking at it, and would have to be told to stop.
 
 ## Testing a terminal UI without a terminal
 
@@ -147,30 +307,59 @@ painted, typed into and clicked in a plain unit test:
 ```
 
 That is how this project's own suite works — the reconciler, layout, focus,
-entry editing and keyed reordering are all asserted on rendered text, with no
-tty. `jolt smoke` covers the part that genuinely needs a terminal.
+scrolling, overlays, entry editing and keyed reordering are all asserted on
+rendered text, with no tty. `jolt smoke` covers the part that genuinely needs a
+terminal.
+
+`run-async` starts a UI on a background thread and hands back `{:quit! :result}`,
+for driving one from a REPL. The REPL and the UI then share a terminal, so use
+`tap>` rather than `println` while it is up: anything printed lands in the middle
+of the frame.
+
+## Text width
+
+Widths are measured in **grapheme clusters**, not characters. `👍🏽` is one cluster
+two cells wide rather than a thumb plus a stray skin tone, `🇯🇵` is one flag, and
+`truncate` will never cut between the two. The table is a deliberate
+approximation of wcwidth(3) — chosen over an FFI call in the layout path, and the
+locale dependence that comes with it — with one departure: a cluster carrying
+U+FE0F is two cells, because that is what a terminal draws even where wcwidth
+reports one.
 
 ## Architecture
 
 - **`glimmer-tui.ffi`** — ncursesw and libc bindings, key codes, attribute bits,
   the MEVENT layout. No logic.
-- **`glimmer-tui.text`** — display width in cells, and truncation built on it, so
-  CJK and emoji do not shift a row.
-- **`glimmer-tui.screen`** — the paint surface: ncurses or an in-memory grid.
+- **`glimmer-tui.text`** — grapheme clustering, display width, truncation.
+- **`glimmer-tui.color`** — colour props to palette indices, and down to what the
+  terminal has.
+- **`glimmer-tui.border`** — the box-drawing sets.
+- **`glimmer-tui.keys`** — key codes to named events, and matching against
+  bindings.
+- **`glimmer-tui.screen`** — the paint surface: ncurses, an in-memory grid, or
+  either one clipped to a rectangle.
 - **`glimmer-tui.widget`** — the widget registry and the node tree. Creating and
   patching widgets is pure data; nothing touches the terminal.
+- **`glimmer-tui.widgets`** and the namespaces under it — the built-in widgets,
+  each one a spec in that registry. A consumer adds its own the same way.
 - **`glimmer-tui.layout`** — measure and arrange, pure functions over snapshots.
 - **`glimmer-tui.render`** — paint a laid-out tree onto a screen, clipping each
-  node to its parent.
+  node to its parent and hoisting overlays to the top.
 - **`glimmer-tui.curses`** — terminal lifecycle, colour pair allocation, input.
-- **`glimmer-tui.core`** — the backend map, the event loop, focus and hit testing.
+- **`glimmer-tui.core`** — the backend map, the event loop, focus, hit testing,
+  scrolling and timers.
 
 ## Status
 
-Early. The widget set is small and there is no scrolling viewport yet, so a UI
-taller than the terminal is clipped rather than scrolled. Colour is the 8-colour
-indexed palette. The reconciler, layout, focus and input paths are covered by the
+Beta. The widget set covers what a terminal application usually needs and the
+reconciler, layout, focus, scrolling, overlays and input paths are covered by the
 headless suite; the ncurses path is covered by `jolt smoke`.
+
+Known limits. Bracketed paste is not decoded, so a paste arrives as its
+characters one at a time and a pasted newline activates the field. Mouse
+wheel-down is not reported by the mouse ABI macOS's ncurses was built with
+(version 1 has no button 5), so on that build the wheel scrolls one way and the
+keyboard bindings are not optional. Colour is indexed, never 24-bit on the wire.
 
 Two things to know about hostile environments. `usable-terminal?` checks the
 three conditions that normally stop a UI from starting (no tty, no TERM, no
