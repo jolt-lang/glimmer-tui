@@ -165,3 +165,49 @@
     (is (= {:x 0 :y 3} (place :bottom-left)))
     (is (= {:x 8 :y 3} (place :bottom-right)))
     (is (= {:x 4 :y 1} (place :center)))))
+
+;; --- minimums and shrinking --------------------------------------------------
+(deftest a-node-reports-what-it-can-live-on-as-well-as-what-it-wants
+  (testing "a label cannot be shorter than its text"
+    (let [m (l/measure (label "hi\nthere"))]
+      (is (= (:natural m) (:min m)))))
+  (testing "a scroll can be given nothing at all"
+    (let [m (l/measure (n :scroll {} [(n :vbox {} (repeat 9 (label "row")))]))]
+      (is (= 9 (:h (:natural m))))
+      (is (= 0 (:h (:min m))))))
+  (testing "a list can live in one row, and a table in a header plus one"
+    (is (= 1 (:h (:min (l/measure (n :listbox {:items ["a" "b" "c"]}))))))
+    (is (= 2 (:h (:min (l/measure (n :table {:columns [{:title "c" :key :c}]
+                                             :rows [{:c 1} {:c 2}]})))))))
+  (testing "a size request is a floor on the minimum too"
+    (is (= 4 (:h (:min (l/measure (n :scroll {:height-request 4}
+                                     [(n :vbox {} (repeat 9 (label "row")))]))))))))
+
+(deftest what-can-shrink-shrinks-before-anything-is-clipped
+  ;; The whole point of a scroll: nine rows of content in a box six tall must not
+  ;; cost the footer its row.
+  (let [tree (l/layout (n :vbox {} [(label "header")
+                                    (n :scroll {} [(n :vbox {} (repeat 9 (label "row")))])
+                                    (label "footer")])
+                       10 6)
+        [header scroll footer] (:children tree)]
+    (is (= 1 (:h (:rect header))))
+    (is (= 4 (:h (:rect scroll))) "the scroll gave up the five rows that were missing")
+    (is (= 1 (:h (:rect footer))) "and the footer kept its own")))
+
+(deftest the-squeeze-is-shared-in-proportion-to-what-each-can-give
+  (let [scroll (fn [rows] (n :scroll {:scrollbar false}
+                             [(n :vbox {} (repeat rows (label "row")))]))
+        tree (l/layout (n :vbox {} [(scroll 10) (scroll 20)]) 10 12)
+        [a b] (:children tree)]
+    ;; 30 rows of content in 12: 18 to give up, split 1:2
+    (is (= 4 (:h (:rect a))))
+    (is (= 8 (:h (:rect b))))
+    (is (= 12 (+ (:h (:rect a)) (:h (:rect b)))) "and the total lands exactly")))
+
+(deftest when-even-the-minimums-do-not-fit-children-are-served-in-order
+  (let [tree (l/layout (n :vbox {} [(label "a\nb\nc") (label "d\ne") (label "f")]) 10 4)
+        [a b c] (:children tree)]
+    (is (= 3 (:h (:rect a))))
+    (is (= 1 (:h (:rect b))) "what was left")
+    (is (= 0 (:h (:rect c))) "and nothing for the tail")))

@@ -9,13 +9,24 @@
     arrange  top-down, hands each node the box it actually gets and writes an
              inner :rect {:x :y :w :h} for the painter
 
+  Every node reports two sizes rather than one: :natural, what it would like,
+  and :min, what it can survive on. They are the same number for most widgets —
+  a label cannot be shorter than its text — but a widget that handles its own
+  overflow says so, and that is what makes scrolling worth having. A :scroll can
+  be given nothing and still work; a :listbox can live in one row. Without the
+  second number a scroll would take its content's height out of the box it is in
+  and push whatever follows it off the bottom, which is precisely the problem it
+  exists to solve.
+
   A box lays its children out along its :orientation, separated by :spacing.
   Leftover space on that axis goes to the children marked :hexpand (horizontal)
   or :vexpand (vertical), split evenly; if nobody expands, the leftover is left
   empty at the end. On the cross axis a child fills the box by default, which is
   what GTK does too, and :halign/:valign of :start, :center or :end opt out of
-  that. When there is not enough room, children are served in order until it runs
-  out — clipping the tail is the predictable choice for a box that cannot grow.
+  that. When there is not enough room, the children that CAN give space up do so
+  first, in proportion to how much each has to give; only when everything is at
+  its minimum and it still does not fit are children served in order and the tail
+  clipped.
 
   Two container kinds do not follow that rule:
 
@@ -74,47 +85,77 @@
   "Whether a scroll container reserves a column for its scrollbar."
   [n] (not (false? (:scrollbar (:props n)))))
 
+(defn- box-size
+  "The size a box needs along both axes, reading `key` (:natural or :min) from
+  each child."
+  [n kids key]
+  (let [spacing (or (:spacing (:props n)) 0)
+        gaps (* spacing (max 0 (dec (count kids))))
+        ws (map #(:w (key %) 0) kids)
+        hs (map #(:h (key %) 0) kids)]
+    (if (horizontal? n)
+      {:w (+ (reduce + 0 ws) gaps) :h (reduce max 0 hs)}
+      {:w (reduce max 0 ws) :h (+ (reduce + 0 hs) gaps)})))
+
+(defn- leaf-min
+  "How small a leaf can be made. A widget that scrolls or pages its own contents
+  says so with :min-size; everything else is as small as it is big."
+  [n natural]
+  (if-let [f (:min-size (w/spec-for (:tag n)))]
+    (f (:props n) (:state n) natural)
+    natural))
+
+(defn- frame-border
+  "The cells a frame spends on its border."
+  [n props]
+  (if-let [f (:measure (w/spec-for (:tag n)))] (f props (:state n)) {:w 2 :h 2}))
+
 (defn measure
-  "Annotate every node in `n` with :natural, its outer size as a {:w :h}."
+  "Annotate every node in `n` with :natural, the outer size it would like, and
+  :min, the outer size it can be cut down to. Both include margins, padding and
+  a frame's border."
   [n]
   (let [kids (mapv measure (:children n))
         props (:props n)
         m (edges props :margin)
         p (edges props :padding)
         kind (w/container-kind (:tag n))
-        inner
+        n (assoc n :children kids)
+        c (first kids)
+        border (when (= :frame kind) (frame-border n props))
+        natural
         (case kind
-          :box (let [spacing (or (:spacing props) 0)
-                     gaps (* spacing (max 0 (dec (count kids))))
-                     ws (map #(:w (:natural %)) kids)
-                     hs (map #(:h (:natural %)) kids)]
-                 (if (horizontal? n)
-                   {:w (+ (reduce + 0 ws) gaps) :h (reduce max 0 hs)}
-                   {:w (reduce max 0 ws) :h (+ (reduce + 0 hs) gaps)}))
-          ;; a frame spends a cell on each side for its border
-          :frame (let [c (first kids)
-                       b (:measure (w/spec-for (:tag n)))
-                       border (if b (b props (:state n)) {:w 2 :h 2})]
-                   {:w (+ (:w border) (:w (:natural c) 0))
-                    :h (+ (:h border) (:h (:natural c) 0))})
-          :window (let [c (first kids)]
-                    {:w (:w (:natural c) 0) :h (:h (:natural c) 0)})
-          ;; a scroll wants its child's size; when it is not given that much, the
-          ;; shortfall becomes the scrollable range instead of being clipped away
-          :scroll (let [c (first kids)]
-                    {:w (+ (:w (:natural c) 0) (if (scrollbar? n) 1 0))
-                     :h (:h (:natural c) 0)})
+          :box (box-size n kids :natural)
+          :frame {:w (+ (:w border) (:w (:natural c) 0))
+                  :h (+ (:h border) (:h (:natural c) 0))}
+          :window {:w (:w (:natural c) 0) :h (:h (:natural c) 0)}
+          ;; a scroll wants its child's size; what it is given instead becomes
+          ;; the scrollable range rather than being clipped away
+          :scroll {:w (+ (:w (:natural c) 0) (if (scrollbar? n) 1 0))
+                   :h (:h (:natural c) 0)}
           ;; an overlay floats: it takes no room where it was declared
           :overlay {:w 0 :h 0}
           (leaf-size n))
-        inner {:w (+ (:w inner) (:l p) (:r p))
-               :h (+ (:h inner) (:t p) (:b p))}
-        inner {:w (max (or (:width-request props) 0) (:w inner))
-               :h (max (or (:height-request props) 0) (:h inner))}]
-    (assoc n
-           :children kids
-           :natural {:w (+ (:w inner) (:l m) (:r m))
-                     :h (+ (:h inner) (:t m) (:b m))})))
+        minimum
+        (case kind
+          :box (box-size n kids :min)
+          :frame {:w (+ (:w border) (:w (:min c) 0))
+                  :h (+ (:h border) (:h (:min c) 0))}
+          :window {:w (:w (:min c) 0) :h (:h (:min c) 0)}
+          ;; the whole point: a scroll gives up whatever the box around it needs
+          :scroll {:w 0 :h 0}
+          :overlay {:w 0 :h 0}
+          (leaf-min n natural))
+        outer (fn [inner]
+                (let [inner {:w (+ (:w inner) (:l p) (:r p))
+                             :h (+ (:h inner) (:t p) (:b p))}
+                      ;; a size request is a floor on both numbers: asking for
+                      ;; four rows means four rows even when space is short
+                      inner {:w (max (or (:width-request props) 0) (:w inner))
+                             :h (max (or (:height-request props) 0) (:h inner))}]
+                  {:w (+ (:w inner) (:l m) (:r m))
+                   :h (+ (:h inner) (:t m) (:b m))}))]
+    (assoc n :natural (outer natural) :min (outer minimum))))
 
 (defn- expands? [n axis]
   (if (= axis :h) (boolean (:hexpand (:props n))) (boolean (:vexpand (:props n)))))
@@ -140,11 +181,45 @@
       (let [size (min want avail)]
         [(align-offset align avail size) size]))))
 
+(defn- shrink-to-fit
+  "Take `deficit` cells back from the children that can give them up, in
+  proportion to how much each has to give. A child already at its minimum gives
+  nothing, which is how a label keeps its text while the scroll beside it makes
+  room."
+  [naturals mins deficit]
+  (let [caps (mapv - naturals mins)
+        total (reduce + 0 caps)]
+    (if (zero? total)
+      (vec naturals)
+      (let [taken (mapv (fn [cap] (quot (* deficit cap) total)) caps)
+            ;; the division loses a cell or two; hand those to whoever still has
+            ;; room, so the total lands exactly on the space available
+            taken (loop [taken taken left (- deficit (reduce + 0 taken))]
+                    (if (zero? left)
+                      taken
+                      (if-let [i (first (keep-indexed
+                                          (fn [i t] (when (< t (nth caps i)) i))
+                                          taken))]
+                        (recur (update taken i inc) (dec left))
+                        taken)))]
+        (mapv - naturals taken)))))
+
+(defn- serve-in-order
+  "Hand out `room` cells from the front, giving each child what it asked for
+  until there is nothing left. The last resort, for a box that cannot fit its
+  children even at their minimums."
+  [wants room]
+  (first (reduce (fn [[acc left] want]
+                   (let [got (max 0 (min want left))]
+                     [(conj acc got) (- left got)]))
+                 [[] (max 0 room)]
+                 wants)))
+
 (defn- distribute
-  "How many cells each child gets on the main axis. Children are given their
-  natural size in order while space lasts; any surplus is split evenly between
-  the expanders, with the remainder handed to the earliest of them."
-  [kids naturals avail spacing axis]
+  "How many cells each child gets on the main axis. With room to spare, children
+  get their natural size and the surplus goes to the expanders; without, the
+  children that can shrink do so before anything is clipped."
+  [kids naturals mins avail spacing axis]
   (let [gaps (* spacing (max 0 (dec (count kids))))
         total (reduce + 0 naturals)
         room (- avail gaps)
@@ -168,13 +243,14 @@
       ;; enough room and nobody expands: everyone gets exactly what they asked for
       (>= extra 0) (vec naturals)
 
-      ;; not enough room: serve in order until it runs out
+      ;; short of room: shrink what can be shrunk, and only clip if that is not
+      ;; enough — a scroll gives up its rows before a footer loses its row
       :else
-      (first (reduce (fn [[acc left] nat]
-                       (let [got (max 0 (min nat left))]
-                         [(conj acc got) (- left got)]))
-                     [[] (max 0 room)]
-                     naturals)))))
+      (let [deficit (- extra)
+            capacity (reduce + 0 (map - naturals mins))]
+        (if (>= capacity deficit)
+          (shrink-to-fit naturals mins deficit)
+          (serve-in-order mins room))))))
 
 (declare arrange)
 
@@ -184,8 +260,10 @@
         spacing (or (:spacing props) 0)
         h? (horizontal? n)
         axis (if h? :h :v)
-        naturals (map (fn [c] (if h? (:w (:natural c) 0) (:h (:natural c) 0))) kids)
-        sizes (distribute kids naturals (if h? (:w rect) (:h rect)) spacing axis)]
+        size-of (fn [key c] (if h? (:w (key c) 0) (:h (key c) 0)))
+        naturals (map #(size-of :natural %) kids)
+        mins (map #(size-of :min %) kids)
+        sizes (distribute kids naturals mins (if h? (:w rect) (:h rect)) spacing axis)]
     (assoc n :children
            (first
              (reduce

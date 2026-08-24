@@ -250,6 +250,17 @@ along with it, so the wheel behaves the way a wheel should.
 A scrollbar is drawn in the last column whenever there is more content than
 viewport; `:scrollbar false` gives the column back.
 
+Layout gives every node two sizes: `:natural`, what it would like, and `:min`,
+what it can survive on. They are the same for most widgets — a label cannot be
+shorter than its text — but a widget that handles its own overflow says so, and a
+box short of room takes the shortfall from those first, in proportion to what
+each has to give, before anything is clipped. That is what makes a scroll worth
+having: without it the scroll's content height would come out of the box it sits
+in and push the footer off the bottom, which is the problem it exists to solve.
+`:listbox` and `:table` shrink the same way, down to a row (a table keeps its
+header). A `:height-request` is a floor on both numbers, so asking for four rows
+gets four rows even when space is short.
+
 ## Overlays
 
 An `:overlay` is written where it belongs in the component that owns it, and laid

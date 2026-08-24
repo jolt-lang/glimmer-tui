@@ -114,6 +114,9 @@
                                             (text/width (str (item-desc i)))))
                                      is))]
        {:w (+ prefix widest) :h (max 1 (* per (count is)))}))
+   ;; a list keeps its own offset, so it can be given one row and still work —
+   ;; which is what stops it from pushing the rest of the window off the bottom
+   :min-size (fn [_ _ natural] {:w (:w natural) :h 1})
    :init-state (fn [props] {:cursor (or (:selected props) 0) :offset 0})
    :sync-state (fn [props state]
                  (let [sel (:selected props)]
@@ -216,6 +219,8 @@
            gap (:gap props 1)]
        {:w (+ (reduce + 0 widths) (* gap (max 0 (dec (count widths)))))
         :h (+ (count (:rows props)) (if (header? props) 1 0))}))
+   ;; likewise: the header and one row are all a table truly needs
+   :min-size (fn [props _ natural] {:w (:w natural) :h (if (header? props) 2 1)})
    :init-state (fn [props] {:cursor (or (:selected props) 0) :offset 0})
    :sync-state (fn [props state]
                  (let [sel (:selected props)]
