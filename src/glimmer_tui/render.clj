@@ -39,6 +39,16 @@
 
 (defn- overlay? [n] (= :overlay (w/container-kind (:tag n))))
 
+(defn- child-clip
+  "The rectangle a node's children are confined to. Normally that is the node's
+  own visible rect, but a scroll keeps a column for its scrollbar: content wider
+  than the viewport would otherwise paint straight over the bar, which is only
+  visible when there is enough content to need one."
+  [n vis]
+  (if-let [vp (:viewport n)]
+    (intersect vis {:x (:x (:rect n)) :y (:y (:rect n)) :w (:w vp) :h (:h vp)})
+    vis))
+
 (defn- paint!
   "Paint `n` and its children, clipped to `clip`. Overlay subtrees are collected
   rather than painted, and returned so the caller can paint them on top."
@@ -47,7 +57,8 @@
     [n]
     (if-let [vis (intersect (:rect n) clip)]
       (do (paint-node! screen n vis ctx)
-          (vec (mapcat #(paint! screen % vis ctx) (:children n))))
+          (let [inner (child-clip n vis)]
+            (vec (mapcat #(paint! screen % inner ctx) (:children n)))))
       ;; an invisible subtree can still hold an overlay, which is anchored to the
       ;; screen and does not care that its declaration site scrolled out of view
       (vec (mapcat #(paint! screen % clip ctx) (:children n))))))

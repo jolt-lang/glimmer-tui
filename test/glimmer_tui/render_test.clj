@@ -123,6 +123,13 @@
                    [:label {:label "e"}] [:label {:label "f"}]]]
                  4 3)]
     (is (= ["a  █" "b  │" "c  │"] (scr/lines s))))
+  (testing "content wider than the viewport does not paint over the bar"
+    (let [s (paint [:scroll {:height-request 2}
+                    [:vbox {} [:label {:label "aaaaaaaaaaaa"}]
+                     [:label {:label "bbbbbbbbbbbb"}]
+                     [:label {:label "cccccccccccc"}]]]
+                   6 2)]
+      (is (= ["aaaaa█" "bbbbb│"] (scr/lines s)))))
   (testing "and none when everything fits"
     (let [s (paint [:scroll {:height-request 3}
                     [:vbox {} [:label {:label "a"}]]]
