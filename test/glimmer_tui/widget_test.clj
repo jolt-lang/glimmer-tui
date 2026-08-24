@@ -2,8 +2,10 @@
   "The widget layer on its own: prop application, the edit state an entry owns,
   the focus ring and hit testing."
   (:require [clojure.test :refer [deftest is testing]]
+            [glimmer-tui.keys :as keys]
             [glimmer-tui.layout :as l]
-            [glimmer-tui.widget :as w]))
+            [glimmer-tui.widget :as w]
+            [glimmer-tui.widgets]))
 
 (defn- tree [root] (w/snapshot root))
 
@@ -50,9 +52,13 @@
       (is (> @w/dirty mid)))))
 
 ;; --- entry state -------------------------------------------------------------
-(defn- type-into! [entry & codes]
+(defn- type-into!
+  "Feed key codes (or characters) to a widget the way the event loop would:
+  decoded into key events."
+  [entry & codes]
   (let [k (:key (w/spec-for :entry))]
-    (doseq [c codes] (k entry (if (char? c) (int c) c)))))
+    (doseq [c codes]
+      (k entry (keys/decode (if (char? c) (int c) c)) {}))))
 
 (deftest an-entry-owns-its-edit-buffer
   (let [seen (atom [])
