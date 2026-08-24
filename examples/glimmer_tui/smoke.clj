@@ -40,7 +40,10 @@
    [:frame {:label "scroll" :border :rounded :height-request 4}
     [:scroll {:vexpand true}
      (into [:vbox {}] (for [i (range 12)] [:label {:label (str "row " i " 日本 👍🏽")}]))]]
-   [:button {:label (str "pressed " @presses) :on-click #(swap! presses inc)}]])
+   ;; :autofocus, because the scroll above would otherwise take the focus — it
+   ;; holds nothing focusable of its own, so it is what Tab lands on first
+   [:button {:label (str "pressed " @presses) :autofocus true
+             :on-click #(swap! presses inc)}]])
 
 (defn- drive!
   "Stand in for a user and for an nREPL session: mutate a cell from a worker
