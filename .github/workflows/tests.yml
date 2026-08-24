@@ -36,12 +36,13 @@ jobs:
           COLUMNS: "80"
           LINES: "24"
         run: |
-          # Known limitation: on a GitHub runner newterm fails even though the
-          # pty covers all three descriptors, terminfo has the entry, and the
-          # size is set — so this step reports a skip there and the ncurses path
-          # is covered by running `jolt smoke` locally. The step stays because it
-          # would catch a missing libncursesw or a broken binding on any runner
-          # that CAN host a terminal.
+          # This used to be recorded as a runner limitation. It was not: every
+          # jolt before 0.7.24 exported its own kernel's ncurses, which took
+          # priority over the one the backend loads and left initscr unable to
+          # read a terminfo entry (jolt#728). Until the installer here picks up
+          # a jolt with that fix, the step still reports a skip — "Error opening
+          # terminal" reads the same as a machine that cannot host a UI — and
+          # the ncurses path is covered by running `jolt smoke` locally.
           set -o pipefail
           out=$(script -qec "jolt -M:smoke" /dev/null 2>&1 | tr -d '\000' || true)
           printf '%s\n' "$out"

@@ -51,6 +51,16 @@ Nothing newer is bound on purpose: the 6.1 extended-colour entry points are
 absent from Apple's build. That is not a limit on what you can write — a `#ff6432`
 prop works fine (see [Colour](#colour)) — only on how it reaches the terminal.
 
+**jolt 0.7.24 or newer**, though, because of how jolt is linked rather than
+anything either project does at runtime. Chez's expression editor links ncurses
+into the jolt binary, and until 0.7.24 those symbols were exported: the
+executable is searched before any library loaded through the FFI, so the ncurses
+this backend binds had its own internal calls bound back into the kernel's older
+copy. The result is `initscr` failing with "Error opening terminal" on a terminal
+that works everywhere else, or a segfault inside it — see
+[jolt#728](https://github.com/jolt-lang/jolt/pull/728). There is nothing to work
+around here; the fix is the newer jolt.
+
 ## Running
 
 ```sh
@@ -378,10 +388,18 @@ wheel-down is not reported by the mouse ABI macOS's ncurses was built with
 (version 1 has no button 5), so on that build the wheel scrolls one way and the
 keyboard bindings are not optional. Colour is indexed, never 24-bit on the wire.
 
-Two things to know about hostile environments. `usable-terminal?` checks the
-three conditions that normally stop a UI from starting (no tty, no TERM, no
-terminfo entry), and `ui/run` raises rather than proceeding when one of them
-fails. It cannot promise more than that: `initscr` reports failure by calling
-`exit()`, and a GitHub Actions runner manages to fail it even with a pty on all
-three descriptors, a terminfo entry present and a window size set. That is why CI
-runs the headless suite and reports the smoke step as skipped there.
+On hostile environments. `usable-terminal?` checks the three conditions that
+normally stop a UI from starting (no tty, no TERM, no terminfo entry), and
+`ui/run` raises rather than proceeding when one of them fails. It cannot promise
+more than that, because `initscr` reports failure by calling `exit()` rather than
+returning — so a fourth condition nobody checked for looks exactly like a crash.
+
+That is what the smoke step was hitting, and this README used to blame the CI
+runner for it. It was not the runner. Every jolt binary before 0.7.24 exported
+the ncurses its own kernel is linked against, which took priority over the one
+this backend loads and left `initscr` unable to read a terminfo entry it should
+have had no trouble with (see [Requirements](#requirements)). CI reported the
+step as skipped because "Error opening terminal" is indistinguishable from a
+machine that genuinely cannot host a UI. On a jolt with the fix, `jolt smoke`
+passes on a real terminal — timers, scrolling, borders, wide glyphs and key
+dispatch included.
