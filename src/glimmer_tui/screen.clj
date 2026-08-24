@@ -14,13 +14,18 @@
   it as an in-memory grid. That second implementation is what makes this backend
   testable: the whole pipeline (reconcile, layout, paint) runs headless and the
   assertions read the rendered frame back as strings, with no terminal, no
-  display and no ncurses call anywhere in the test suite."
+  display and no ncurses call anywhere in the test suite.
+
+  `clip` wraps any screen in a rectangle. That is how a widget can be handed its
+  own full rect to paint into while only the visible part of it reaches the
+  terminal — which is what makes a partially scrolled row draw correctly instead
+  of being redrawn from its own left edge at the clip boundary."
   (:require [clojure.string :as str]
             [glimmer-tui.text :as text]))
 
 ;; The cell that a double-width glyph spills into. Kept in the grid so column
 ;; arithmetic stays honest, and filtered out when a row is read back as text.
-(def ^:private wide-tail (char 0))
+(def ^:private wide-tail ::tail)
 
 (defn size [scr] ((:size scr)))
 (defn clear! [scr] ((:clear! scr)))
@@ -35,16 +40,41 @@
   (when (pos? cells)
     (put! scr x y (apply str (repeat cells " ")) style)))
 
+;; --- clipping ----------------------------------------------------------------
+(defn clip
+  "A view of `scr` that only lets writes inside `rect` through. Writes that
+  straddle an edge are cut on a cell boundary; a wide glyph cut in half becomes a
+  space, so the columns still line up. Clips compose, so nesting one inside
+  another narrows the window rather than widening it."
+  [scr {:keys [x y w h] :as rect}]
+  (if (nil? rect)
+    scr
+    (assoc scr
+           :put!
+           (fn [px py s style]
+             (when (and (>= py y) (< py (+ y h)) (pos? w))
+               (let [hidden (- x px)
+                     s (if (pos? hidden) (text/drop-cells s hidden) s)
+                     px (max px x)
+                     room (- (+ x w) px)]
+                 (when (pos? room)
+                   (put! scr px py (text/truncate s room) style)))))
+           :cursor!
+           (fn [cx cy visible?]
+             (cursor! scr cx cy (and visible?
+                                     (>= cx x) (< cx (+ x w))
+                                     (>= cy y) (< cy (+ y h))))))))
+
 ;; --- in-memory screen --------------------------------------------------------
 (defn buffer-screen
-  "A screen backed by a `rows` x `cols` grid of characters held in an atom.
-  Writes are clipped to the grid, so a widget painting out of bounds is a no-op
-  rather than an exception, exactly as ncurses behaves.
+  "A screen backed by a `rows` x `cols` grid of grapheme clusters held in an
+  atom. Writes are clipped to the grid, so a widget painting out of bounds is a
+  no-op rather than an exception, exactly as ncurses behaves.
 
-  A wide glyph occupies its own cell and blanks the one after it, so reading a
+  A wide cluster occupies its own cell and blanks the one after it, so reading a
   row back yields text of the right display width."
   [cols rows]
-  (let [blank (vec (repeat rows (vec (repeat cols \space))))
+  (let [blank (vec (repeat rows (vec (repeat cols " "))))
         state (atom {:cells blank :styles {} :cursor nil :frames 0})]
     {:size     (fn [] [cols rows])
      :clear!   (fn [] (swap! state assoc :cells blank :styles {}) nil)
@@ -55,22 +85,22 @@
        (when (and (>= y 0) (< y rows))
          (swap! state
                 (fn [st]
-                  (loop [chars (seq s) cx x st st]
-                    (if-let [c (first chars)]
-                      (let [w (text/char-width (int c))]
+                  (loop [cs (text/clusters s) cx x st st]
+                    (if-let [c (first cs)]
+                      (let [w (text/cluster-width c)]
                         (cond
                           ;; zero-width: nothing to place, and nothing to skip
-                          (zero? w) (recur (next chars) cx st)
-                          (or (< cx 0) (>= cx cols)) (recur (next chars) (+ cx w) st)
+                          (zero? w) (recur (next cs) cx st)
+                          (or (< cx 0) (>= cx cols)) (recur (next cs) (+ cx w) st)
                           :else
                           (let [st (-> st
                                        (assoc-in [:cells y cx] c)
                                        (assoc-in [:styles [x y cx]] style))
-                                ;; a double-width glyph owns the next cell too
+                                ;; a double-width cluster owns the next cell too
                                 st (if (and (= w 2) (< (inc cx) cols))
                                      (assoc-in st [:cells y (inc cx)] wide-tail)
                                      st)]
-                            (recur (next chars) (+ cx w) st))))
+                            (recur (next cs) (+ cx w) st))))
                       st)))))
        nil)
      ::state   state}))
