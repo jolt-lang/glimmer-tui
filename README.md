@@ -103,6 +103,7 @@ numbers become labels, `nil` children are skipped, seqs are spliced.
 - `:color` / `:bg` — see [Colour](#colour)
 - `:bold`, `:dim`, `:underline`, `:reverse`, `:blink` — booleans
 - `:sensitive false` — dims the widget and takes it out of the tab order
+- `:autofocus true` — start with the focus here rather than on whatever is first
 
 **Per-tag props**
 
@@ -218,6 +219,11 @@ be sitting in, and how an application binds a key of its own:
 Only what nobody wanted becomes a quit key, an `Esc` that closes a dialog, or an
 `Enter` that presses a button. That ordering is deliberate: it means `q` can be a
 quit key in an app that also has a text field, because the field sees it first.
+
+`:autofocus true` says which widget starts focused. It is worth more in a
+terminal than it sounds: tree order gives the focus to whatever is highest on the
+screen, usually a filter field, and a focused field swallows every letter — so an
+application's single-key bindings would be dead until the user pressed Tab.
 
 The focus ring is recomputed from the widget tree on every frame, in tree order,
 so a component that renders a new button gets a sensible tab position with no

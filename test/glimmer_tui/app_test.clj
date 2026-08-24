@@ -302,3 +302,23 @@
     (testing "but a ctrl chord nothing consumes still quits"
       ;; ctrl-c reached the loop: the entry declined it
       (is (= "q" @draft)))))
+
+(deftest autofocus-decides-which-widget-starts-focused
+  ;; Tree order would put the focus on the filter field, and a focused field
+  ;; swallows every letter — so `q` would not quit until you pressed Tab.
+  (let [pressed (atom nil)
+        app (fn [] [:vbox {}
+                    [:entry {:text ""}]
+                    [:button {:label "go" :autofocus true
+                              :on-click #(reset! pressed :go)}]])
+        _ (session app)]
+    (tui/press! ENTER)
+    (is (= :go @pressed)))
+  (testing "and without it the first focusable widget still wins"
+    (let [pressed (atom nil)
+          app (fn [] [:vbox {}
+                      [:button {:label "first" :on-click #(reset! pressed :first)}]
+                      [:button {:label "second" :on-click #(reset! pressed :second)}]])
+          _ (session app)]
+      (tui/press! ENTER)
+      (is (= :first @pressed)))))

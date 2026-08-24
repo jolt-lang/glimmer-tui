@@ -190,11 +190,22 @@
 
 (defn- resolve-focus
   "Keep the focus on a live widget: hold the current one while it is still in
-  the ring, otherwise fall back to the first focusable widget (or nothing)."
-  [ring focus-id]
+  the ring, otherwise fall back to whatever asked for focus with :autofocus, and
+  failing that to the first focusable widget (or nothing).
+
+  :autofocus matters more in a terminal than it looks. Tree order puts the focus
+  on whatever is highest on the screen, which is usually a filter field — and a
+  focused text field swallows every letter, so an application's single-key
+  bindings are dead until the user presses Tab. Saying which widget starts with
+  the focus is how an app avoids that."
+  [tree ring focus-id]
   (if (and focus-id (some #(= % focus-id) ring))
     focus-id
-    (first ring)))
+    (let [in-ring? (set ring)]
+      (or (first (keep (fn [n] (when (and (:autofocus (:props n)) (in-ring? (:id n)))
+                                 (:id n)))
+                       (w/walk tree)))
+          (first ring)))))
 
 (defn- repaint! []
   (let [{:keys [root screen]} @app
@@ -206,7 +217,7 @@
       (let [snap (w/snapshot root)
             ;; focus needs no geometry: it is tree order over what can take it
             ring (w/focus-ring (focus-scope snap))
-            focus (resolve-focus ring (:focus-id @app))
+            focus (resolve-focus snap ring (:focus-id @app))
             binds (bindings-for snap focus)
             ctx {:focus-id focus :bindings binds}]
         ;; widgets that depend on the loop rather than on props (a help bar)
