@@ -6,20 +6,20 @@
   thread-safe, which costs nothing in practice because glimmer.backend already
   requires that off-thread work be posted to the UI thread through :schedule.
 
-  Colour is 8-colour indexed on purpose. Pairs are allocated lazily as
+  Colour is indexed, and only indexed. Pairs are allocated lazily as
   (foreground, background) combinations turn up and cached, because init_pair
   costs a terminfo round trip and a UI reuses a handful of combinations for its
   whole life. Colour -1 means \"the terminal's own default\", which is what keeps
-  a glimmer UI transparent over the user's theme rather than painting it black."
-  (:require [glimmer-tui.ffi :as c]
+  a glimmer UI transparent over the user's theme rather than painting it black.
+
+  How many indices are available is whatever terminfo says (`tigetnum`), and
+  glimmer-tui.color folds anything richer — a hex string, an r/g/b triple, a
+  256-palette index on a 16-colour tty — down to something this terminal has.
+  Nothing binds the ncurses 6.1 direct-colour entry points, so a hex prop costs
+  no portability: it is resolved to a palette index before init_pair sees it."
+  (:require [glimmer-tui.color :as color]
+            [glimmer-tui.ffi :as c]
             [jolt.ffi :as ffi]))
-
-(def ^:private color-index
-  {:black c/COLOR-BLACK :red c/COLOR-RED :green c/COLOR-GREEN
-   :yellow c/COLOR-YELLOW :blue c/COLOR-BLUE :magenta c/COLOR-MAGENTA
-   :cyan c/COLOR-CYAN :white c/COLOR-WHITE :default c/COLOR-DEFAULT})
-
-(defn- ->color [k] (get color-index k c/COLOR-DEFAULT))
 
 (defn- attrs-of
   "The ncurses attribute word for a style map (colour pair excluded)."
@@ -32,22 +32,33 @@
     (:blink style)     (bit-or c/A-BLINK)))
 
 (defn- pair-for!
-  "The colour pair number for fg/bg, allocating one on first use. Pair 0 is
-  reserved by ncurses for the default colours, so allocation starts at 1."
+  "The colour pair number for the palette indices fg/bg, allocating one on first
+  use. Pair 0 is reserved by ncurses for the default colours, so allocation
+  starts at 1. A terminal has a finite number of pairs (COLOR_PAIRS, 64 on an
+  eight-colour tty); past that the request falls back to the default pair rather
+  than failing, because a UI that loses a colour is better than one that dies."
   [state fg bg]
-  (if (and (= fg :default) (= bg :default))
+  (if (and (neg? fg) (neg? bg))
     0
     (let [k [fg bg]]
       (or (get-in @state [:pairs k])
           (let [n (:next-pair @state)]
-            (c/init-pair n (->color fg) (->color bg))
-            (swap! state #(-> % (assoc-in [:pairs k] n) (assoc :next-pair (inc n))))
-            n)))))
+            (if (>= n (:max-pairs @state))
+              0
+              (do (c/init-pair n fg bg)
+                  (swap! state #(-> % (assoc-in [:pairs k] n) (assoc :next-pair (inc n))))
+                  n)))))))
 
 (defn ncurses-screen
   "A glimmer-tui.screen backed by stdscr. `win` is the pointer initscr returned."
   [win]
-  (let [state (atom {:pairs {} :next-pair 1 :colors? (pos? (c/has-colors))})]
+  (let [colors (if (pos? (c/has-colors)) (max 0 (c/tigetnum "colors")) 0)
+        state (atom {:pairs {} :next-pair 1
+                     :colors? (pos? colors)
+                     :profile (color/profile colors)
+                     ;; terminfo reports pairs too; 0 or ERR means "assume the
+                     ;; classic 64" rather than refusing to allocate any.
+                     :max-pairs (let [p (c/tigetnum "pairs")] (if (pos? p) p 64))})]
     {:size (fn [] [(c/getmaxx win) (c/getmaxy win)])
      :clear! (fn [] (c/werase win) nil)
      :put!
@@ -55,8 +66,11 @@
        ;; ncurses clips writes to the window, but a negative origin is a
        ;; programming error rather than a clip, so guard it here.
        (when (and (>= y 0) (>= x 0) (< y (c/getmaxy win)) (< x (c/getmaxx win)))
-         (let [pair (if (:colors? @state)
-                      (pair-for! state (or (:fg style) :default) (or (:bg style) :default))
+         (let [profile (:profile @state)
+               pair (if (:colors? @state)
+                      (pair-for! state
+                                 (color/resolve-color (:fg style) profile)
+                                 (color/resolve-color (:bg style) profile))
                       0)]
            (c/wattrset win (bit-or (attrs-of style) (c/color-pair pair)))
            ;; -1 means "the whole string, clipped at the right margin", which
