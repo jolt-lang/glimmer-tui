@@ -7,3 +7,6 @@ target/
 .dolt/
 *.db
 .beads-credential-key
+
+# jolt build cache
+.jolt/

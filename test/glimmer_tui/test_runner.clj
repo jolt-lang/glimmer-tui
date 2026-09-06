@@ -31,8 +31,11 @@
 
 (defn -main [& _]
   (let [namespaces '[glimmer-tui.text-test
+                     glimmer-tui.color-test
+                     glimmer-tui.keys-test
                      glimmer-tui.layout-test
                      glimmer-tui.widget-test
+                     glimmer-tui.widgets-test
                      glimmer-tui.render-test
                      glimmer-tui.app-test]]
     (doseq [ns namespaces]

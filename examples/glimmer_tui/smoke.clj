@@ -9,7 +9,10 @@
     worker), and
 
     a key posted onto the loop activates the focused button, which exercises
-    focus, dispatch and the handler round trip through the reconciler.
+    focus, dispatch and the handler round trip through the reconciler, and
+
+    a repeating timer fires on the loop thread, which is what animates a spinner
+    or a progress bar with nobody at the keyboard.
 
   Exit 0 printing SMOKE OK means library load, locale, initscr, layout, paint,
   input dispatch and a clean endwin all worked.
@@ -24,12 +27,23 @@
 
 (def ticks (r/atom 0))
 (def presses (r/atom 0))
+(def frames (r/atom 0))
 
 (defn app []
+  ;; the scroll and the frame put the newer paint paths (clipping, borders, a
+  ;; scrollbar) in front of real ncurses rather than an in-memory grid
   [:vbox {:spacing 1 :margin 1}
    [:label {:label "glimmer-tui smoke" :bold true}]
-   [:label {:label (str "ticks from a worker thread: " @ticks)}]
-   [:button {:label (str "pressed " @presses) :on-click #(swap! presses inc)}]])
+   [:hbox {:spacing 2}
+    [:spinner {:tick @frames :label "timer"}]
+    [:label {:label (str "ticks from a worker thread: " @ticks)}]]
+   [:frame {:label "scroll" :border :rounded :height-request 4}
+    [:scroll {:vexpand true}
+     (into [:vbox {}] (for [i (range 12)] [:label {:label (str "row " i " 日本 👍🏽")}]))]]
+   ;; :autofocus, because the scroll above would otherwise take the focus — it
+   ;; holds nothing focusable of its own, so it is what Tab lands on first
+   [:button {:label (str "pressed " @presses) :autofocus true
+             :on-click #(swap! presses inc)}]])
 
 (defn- drive!
   "Stand in for a user and for an nREPL session: mutate a cell from a worker
@@ -49,10 +63,11 @@
                   (or (System/getenv "TERM") "unset") ")"))
     (try
       (drive!)
+      (tui/every! 100 #(swap! frames inc))
       (ui/run app :auto-quit-ms 1500)
-      (let [ok? (and (= 1 @ticks) (= 2 @presses))]
+      (let [ok? (and (= 1 @ticks) (= 2 @presses) (pos? @frames))]
         (println (if ok? "SMOKE OK" "SMOKE FAIL")
-                 "ticks:" @ticks "presses:" @presses)
+                 "ticks:" @ticks "presses:" @presses "timer:" @frames)
         (when-not ok?
           (when-let [exit (resolve 'jolt.host/exit)] (exit 1))))
       (catch :default e

@@ -31,3 +31,31 @@
   (is (= ["a" "bb"] (text/lines "a\nbb")))
   (is (= [""] (text/lines "")))
   (is (= 2 (text/block-width "a\nbb"))))
+
+(deftest clusters-hold-an-emoji-sequence-together
+  (testing "a base and its combining mark are one cluster"
+    (is (= ["é"] (text/clusters "é"))))
+  (testing "a skin tone binds to the emoji before it"
+    (is (= ["👍🏽"] (text/clusters "👍🏽")))
+    (is (= 2 (text/width "👍🏽")) "one glyph, two cells — not two glyphs"))
+  (testing "a ZWJ sequence is one cluster"
+    (is (= 1 (count (text/clusters "👨‍💻")))))
+  (testing "two regional indicators make one flag"
+    (is (= 1 (count (text/clusters "🇯🇵"))))
+    (is (= 2 (text/width "🇯🇵"))))
+  (testing "a variation selector asks for emoji presentation, which is two cells"
+    (is (= 2 (text/width "❤️")))
+    (is (= 1 (text/width "❤"))))
+  (testing "and a cluster is never cut in half"
+    (is (= "" (text/truncate "👍🏽" 1)))
+    (is (= "👍🏽" (text/truncate "👍🏽ok" 2)))))
+
+(deftest drop-cells-cuts-from-the-left-on-a-cell-boundary
+  (is (= "llo" (text/drop-cells "hello" 2)))
+  (is (= "hello" (text/drop-cells "hello" 0)))
+  (is (= "" (text/drop-cells "hello" 9)))
+  (testing "a wide glyph straddling the cut becomes a space, so columns still line up"
+    (is (= "本" (text/drop-cells "日本" 2)))
+    (is (= " 本" (text/drop-cells "日本" 1)))
+    (is (= 4 (text/width (text/drop-cells "日本x" 1))))
+    (is (= " 本x" (text/drop-cells "日本x" 1)))))
