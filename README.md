@@ -403,3 +403,7 @@ step as skipped because "Error opening terminal" is indistinguishable from a
 machine that genuinely cannot host a UI. On a jolt with the fix, `jolt smoke`
 passes on a real terminal — timers, scrolling, borders, wide glyphs and key
 dispatch included.
+
+## License
+
+MIT (see `LICENSE`).
