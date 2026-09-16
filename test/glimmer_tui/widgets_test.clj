@@ -111,6 +111,119 @@
                              :header false})]
     (is (= ["one"] (paint t 8 1)))))
 
+(defn- painted-screen
+  [wid cols rows focus?]
+  (let [screen (scr/buffer-screen cols rows)
+        tree (laid-out wid cols rows)]
+    (render/render! screen tree (if focus? {:focus-id (:id @wid)} {}))
+    screen))
+
+(deftest table-row-and-cell-styles-resolve-with-documented-precedence
+  (let [row-seen (atom [])
+        cell-seen (atom [])
+        table (w/create!
+               :table
+               {:columns [{:title "A" :key :a :width 3
+                           :style (fn [context]
+                                    (swap! cell-seen conj context)
+                                    {:fg (if (= 0 (:column-index context)) :cyan :red)})}
+                          {:title "B" :key :b :width 2 :style {:underline true}}]
+                :rows [{:a "x" :b 7 :color :green}
+                       {:a "y" :b 8 :color :yellow}]
+                :header false
+                :gap 2
+                :fg :white
+                :bg :black
+                :row-style (fn [{:keys [row index] :as context}]
+                             (swap! row-seen conj context)
+                             {:fg (:color row) :dim (= index 1)})})
+        screen (painted-screen table 10 2 false)]
+    (is (= :cyan (:fg (scr/style-at screen 0 0))) "cell style overrides row style")
+    (is (= :black (:bg (scr/style-at screen 0 0))) "table style remains the base")
+    (is (= :green (:fg (scr/style-at screen 3 0))) "the gap uses row style")
+    (is (= :green (:fg (scr/style-at screen 7 0))) "trailing fill uses row style")
+    (is (:underline (scr/style-at screen 5 0)) "static cell style affects its column")
+    (is (= :yellow (:fg (scr/style-at screen 3 1))) "row callbacks vary by row data")
+    (is (:dim (scr/style-at screen 7 1)) "row callbacks receive the complete index")
+    (is (= [0 1] (mapv :index @row-seen)))
+    (is (= ["x" "y"] (mapv :value @cell-seen)))
+    (is (= [0 0] (mapv :column-index @cell-seen)))
+    (is (every? #(contains? % :selected?) (concat @row-seen @cell-seen)))
+    (is (every? #(contains? % :focused?) (concat @row-seen @cell-seen)))))
+
+(deftest table-static-row-style-and-selection-compose
+  (let [props {:columns [{:title "A" :key :a :width 2 :style {:bg :blue}}]
+               :rows [{:a "x"}]
+               :header false
+               :fg :white
+               :row-style {:fg :green :underline true}}
+        focused (painted-screen (w/create! :table props) 4 1 true)
+        unfocused (painted-screen (w/create! :table props) 4 1 false)]
+    (is (= {:fg :green :bg :blue :underline true :reverse true}
+           (scr/style-at focused 0 0)))
+    (is (= {:fg :green :underline true :reverse true}
+           (scr/style-at focused 3 0)) "focused selection styles trailing fill")
+    (is (= {:fg :green :bg :blue :underline true :bold true}
+           (scr/style-at unfocused 0 0)))
+    (is (= {:fg :green :underline true :bold true}
+           (scr/style-at unfocused 3 0)) "unfocused selection retains row attributes")))
+
+(deftest table-style-callbacks-use-complete-index-after-scrolling
+  (let [seen (atom [])
+        table (w/create! :table
+                         {:columns [{:title "A" :key :a
+                                    :style (fn [{:keys [index] :as context}]
+                                             (swap! seen conj context)
+                                             {:fg (if (= index 2) :cyan :red)})}]
+                          :rows [{:a "zero"} {:a "one"} {:a "two"}]
+                          :header false
+                          :row-style (fn [context]
+                                       (swap! seen conj context)
+                                       {:bg :black})})]
+    (dotimes [_ 2] (press! table DOWN 6 1))
+    (let [screen (painted-screen table 6 1 true)]
+      (is (= 2 (:offset (:state @table))))
+      (is (= "two" (first (scr/lines screen))))
+      (is (= :cyan (:fg (scr/style-at screen 0 0))))
+      (is (= [2 2] (mapv :index @seen)))
+      (is (= {:a "two"} (:row (last @seen)))))))
+
+(deftest table-ignores-invalid-style-values
+  (let [calls (atom 0)
+        table (w/create! :table
+                         {:columns [{:title "A" :key :a :width 2 :style :invalid}
+                                    {:title "B" :key :b :width 2
+                                     :style (fn [_] (swap! calls inc) :invalid)}]
+                          :rows [{:a "x" :b "y"}]
+                          :header false
+                          :color :white
+                          :row-style (fn [_] :invalid)})
+        screen (painted-screen table 7 2 false)]
+    (is (= :white (:fg (scr/style-at screen 0 0))))
+    (is (= :white (:fg (scr/style-at screen 3 0))))
+    (is (= 1 @calls))
+    (is (= :white (:fg (scr/style-at screen 0 1)))
+        "empty rows retain base style without callbacks")
+    (is (= 1 @calls) "empty rows do not invoke cell callbacks")))
+
+(deftest clipped-table-cells-keep-their-absolute-offsets
+  (let [table (w/create! :table
+                         {:columns [{:title "A" :key :a :width 3 :style {:fg :red}}
+                                    {:title "B" :key :b :width 3 :style {:fg :blue}}]
+                          :rows [{:a "abc" :b "XYZ"}]
+                          :header false
+                          :gap 1
+                          :row-style {:fg :green}})
+        screen (scr/buffer-screen 8 1)
+        clipped (scr/clip screen {:x 2 :y 0 :w 5 :h 1})
+        node (assoc (w/snapshot table) :rect {:x 0 :y 0 :w 8 :h 1})]
+    ((:paint (w/spec-for :table)) clipped (:rect node) (:props node) node {})
+    (is (= "c XYZ" (scr/text-at screen 2 0 5)))
+    (is (= :red (:fg (scr/style-at screen 2 0))))
+    (is (= :green (:fg (scr/style-at screen 3 0))) "the clipped gap keeps row style")
+    (is (= :blue (:fg (scr/style-at screen 4 0)))
+        "the later cell does not restart at the clip edge")))
+
 ;; --- entry -------------------------------------------------------------------
 (defn- type! [e & codes]
   (doseq [c codes]

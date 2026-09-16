@@ -95,7 +95,7 @@
                           :else
                           (let [st (-> st
                                        (assoc-in [:cells y cx] c)
-                                       (assoc-in [:styles [x y cx]] style))
+                                       (assoc-in [:styles [y cx]] style))
                                 ;; a double-width cluster owns the next cell too
                                 st (if (and (= w 2) (< (inc cx) cols))
                                      (assoc-in st [:cells y (inc cx)] wide-tail)
@@ -126,8 +126,7 @@
 (defn style-at
   "The style map a cell was painted with, or nil."
   [scr x y]
-  (some (fn [[[_ sy cx] style]] (when (and (= sy y) (= cx x)) style))
-        (:styles @(::state scr))))
+  (get (:styles @(::state scr)) [y x]))
 
 (defn cursor
   "[x y] where the cursor was placed, or nil when hidden."

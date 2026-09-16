@@ -128,14 +128,42 @@ numbers become labels, `nil` children are skipped, seqs are spliced.
 - Overlay: `:anchor`, `:offset-x`, `:offset-y`, `:modal`, `:on-close`
 - Listbox: `:items`, `:selected`, `:descriptions`, `:wrap`, `:cursor-prefix`,
   `:item-prefix`, `:keys`
-- Table: `:columns`, `:rows`, `:selected`, `:header`, `:gap`, `:keys`
+- Table: `:columns`, `:rows`, `:selected`, `:header`, `:gap`, `:row-style`, `:keys`
 - Progress: `:value` (0.0–1.0), `:bar`, `:bar-color`, `:show-percent`
 - Spinner: `:tick`, `:frames`, `:label`
 - Paginator: `:page`, `:total-pages` (or `:total-items` + `:per-page`), `:style`
 - Help: `:bindings`, `:labels`, `:separator`, `:full`, `:ellipsis`
 
-A `:columns` entry is `{:title "name" :key :name :width 12 :align :end}`; `:width`
-and `:align` are optional and rows may be maps or vectors.
+A `:columns` entry is `{:title "name" :key :name :width 12 :align :end
+:style {:fg :green}}`; `:width`, `:align`, and `:style` are optional, and rows may
+be maps or vectors. Table `:row-style` and column `:style` each accept a static
+style map or a callback. The callback receives one context map and returns a
+style map or `nil`:
+
+```clojure
+[:table
+ {:columns [{:title "Callsign"
+             :key :callsign
+             :style (fn [{:keys [value index column-index]}]
+                      (when (and (string? value) (zero? column-index))
+                        {:underline (even? index)}))}
+            {:title "ICAO" :key :icao :style {:bold true}}]
+  :rows [{:callsign "DAL123" :icao "ABC123" :color :blue}]
+  :row-style (fn [{:keys [row]}]
+               {:fg (:color row)})}]
+```
+
+A row callback receives `:row`, `:index`, `:selected?`, and `:focused?`. A cell
+callback also receives `:column`, `:column-index`, and the original `:value`.
+`:index` always refers to the complete `:rows` vector, including after scrolling.
+Row keys such as `:color` have no built-in meaning; the example explicitly maps
+that application value to `{:fg (:color row)}`. Invalid style values and callback
+results add no attributes.
+
+Styles resolve in this order: common table style, row style, cell style, then the
+selection modifier. A focused selected row adds `:reverse true`; an unfocused
+selected row adds `:bold true`. Selection retains colors and other resolved
+attributes.
 
 **Events**
 
