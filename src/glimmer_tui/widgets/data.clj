@@ -170,12 +170,27 @@
 (defn- columns [props]
   (mapv (fn [c] (if (map? c) c {:title (str c) :key c})) (:columns props)))
 
+(defn- raw-cell-value [row col]
+  (cond
+    (map? row) (get row (:key col))
+    (sequential? row) (nth (vec row) (:index col 0) nil)
+    :else row))
+
 (defn- cell-value [row col]
-  (let [v (cond
-            (map? row) (get row (:key col))
-            (sequential? row) (nth (vec row) (:index col 0) nil)
-            :else row)]
+  (let [v (raw-cell-value row col)]
     (str (if (nil? v) "" v))))
+
+(defn- resolve-style [style context]
+  (let [resolved (cond
+                   (map? style) style
+                   (fn? style) (style context)
+                   :else nil)]
+    (if (map? resolved) resolved {})))
+
+(defn- selection-style [style selected? focused?]
+  (cond-> style
+    (and selected? focused?) (assoc :reverse true)
+    (and selected? (not focused?)) (assoc :bold true)))
 
 (defn- column-widths
   "Each column's width: what it asked for, or the widest thing in it."
@@ -242,16 +257,41 @@
          (scr/put! screen (:x rect) (:y rect)
                    (text/pad (header-text props widths) (:w rect))
                    (assoc base :bold true)))
-       (doseq [row (range (if head? (dec (:h rect)) (:h rect)))]
-         (let [idx (+ offset row)
-               r (nth rows idx nil)
-               selected? (= idx cursor)
-               st (cond-> base
-                    (and selected? focused?) (assoc :reverse true)
-                    (and selected? (not focused?)) (assoc :bold true))]
-           (scr/put! screen (:x rect) (+ (:y rect) row (if head? 1 0))
-                     (text/pad (if r (table-row-text props widths r) "") (:w rect))
-                     (if r st base))))))
+       (doseq [viewport-row (range (if head? (dec (:h rect)) (:h rect)))]
+         (let [idx (+ offset viewport-row)
+               present? (< idx (count rows))
+               y (+ (:y rect) viewport-row (if head? 1 0))]
+           (if-not present?
+             (scr/fill! screen (:x rect) y (:w rect) base)
+             (let [r (nth rows idx)
+                   selected? (= idx cursor)
+                   row-context {:row r
+                                :index idx
+                                :selected? selected?
+                                :focused? focused?}
+                   row-style (merge base (resolve-style (:row-style props) row-context))
+                   painted-row-style (selection-style row-style selected? focused?)
+                   cols (columns props)
+                   gap (:gap props 1)]
+               (scr/fill! screen (:x rect) y (:w rect) painted-row-style)
+               (loop [column-index 0
+                      x (:x rect)]
+                 (when (< column-index (count cols))
+                   (let [column (nth cols column-index)
+                         width (nth widths column-index)
+                         value (raw-cell-value r (assoc column :index column-index))
+                         display (str (if (nil? value) "" value))
+                         cell-context (assoc row-context
+                                             :column column
+                                             :column-index column-index
+                                             :value value)
+                         cell-style (merge row-style
+                                           (resolve-style (:style column) cell-context))
+                         painted-cell-style (selection-style cell-style selected? focused?)]
+                     (scr/put! screen x y
+                               (w/text-align display width (:align column :start))
+                               painted-cell-style)
+                     (recur (inc column-index) (+ x width gap)))))))))))
    :key
    (fn [wid event ctx]
      (let [props (:props @wid)
