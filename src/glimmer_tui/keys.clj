@@ -61,6 +61,36 @@
       (>= code 32) {:type :char :ch (char code) :code code}
       :else {:type :unknown :code code})))
 
+;; --- bracketed paste ---------------------------------------------------------
+;; A terminal in bracketed-paste mode (glimmer-tui.curses turns it on) wraps
+;; pasted text in ESC [ 200~ ... ESC [ 201~. Neither marker is a terminfo key, so
+;; ncurses hands the loop their bytes one at a time — which is what `paste-start`
+;; and `paste-end` spell out, as the codes that follow the ESC.
+(def paste-start [91 50 48 48 126])             ; [200~
+(def paste-end   [91 50 48 49 126])             ; [201~
+
+(defn paste-marker
+  "What the codes read after an ESC have made so far: :paste-start, :paste-end,
+  :partial while the run could still become either, or nil for a run that is
+  neither — which the event loop hands back as the alt chord and the keys it
+  really was."
+  [codes]
+  (let [codes (vec codes)
+        n (count codes)
+        prefix-of? (fn [marker] (= codes (subvec marker 0 (min n (count marker)))))]
+    (cond
+      (= codes paste-start) :paste-start
+      (= codes paste-end)   :paste-end
+      (or (prefix-of? paste-start) (prefix-of? paste-end)) :partial
+      :else nil)))
+
+(defn paste
+  "The event a decoded paste becomes. It is dispatched like a key — offered to
+  the focused widget, then to its ancestors — so a widget that wants the text in
+  one piece takes it, and one that does not is simply not typed into."
+  [text]
+  {:type :paste :text (or text "")})
+
 (defn printable?
   "Whether `event` is a character a text field should insert."
   [event]
@@ -83,6 +113,7 @@
    "spc" :space "space" :space
    "up" :up "down" :down "left" :left "right" :right
    "home" :home "end" :end "tab" :tab "mouse" :mouse "resize" :resize
+   "paste" :paste
    "f1" :f1 "f2" :f2 "f3" :f3 "f4" :f4 "f5" :f5 "f6" :f6
    "f7" :f7 "f8" :f8 "f9" :f9 "f10" :f10 "f11" :f11 "f12" :f12})
 

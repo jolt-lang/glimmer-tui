@@ -1,5 +1,5 @@
 (ns glimmer-tui.ffi
-  "Raw C bindings for ncursesw, plus the two libc calls a terminal app needs.
+  "Raw C bindings for ncursesw, plus the three libc calls a terminal app needs.
   A thin defcfn layer — no logic. The screen implementation in
   glimmer-tui.curses is built on top of these.
 
@@ -46,6 +46,13 @@
 ;; "Error opening terminal" and exits the PROCESS, taking the REPL with it, so
 ;; glimmer-tui.curses checks first and throws something catchable instead.
 (ffi/defcfn isatty "isatty" [:int] :int)
+
+;; Bytes straight onto a file descriptor, for the one thing ncurses has no entry
+;; point for: the private mode that turns bracketed paste on and off (see
+;; glimmer-tui.curses). Going through write(2) rather than an ncurses output
+;; call keeps it unbuffered, which is what makes the disable reliable — a mode
+;; still set after the process exits is left for the user's shell to trip over.
+(ffi/defcfn write-fd "write" [:int :string :size_t] :ssize_t)
 
 ;; --- lifecycle ---------------------------------------------------------------
 ;; initscr returns stdscr, which is the only window this backend draws into:

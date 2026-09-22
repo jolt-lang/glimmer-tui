@@ -57,3 +57,35 @@
   (is (= "↑" (k/describe :up)))
   (is (= "pgup/ctrl+b" (k/describe ["pgup" "ctrl+b"])))
   (is (= "g" (k/describe "g"))))
+
+;; --- bracketed paste ---------------------------------------------------------
+(defn- codes-of
+  "The key codes a terminal sends for `s` — what the event loop reads one at a
+  time after an ESC."
+  [s] (mapv int s))
+
+(deftest paste-marker-recognises-the-wrapper-a-terminal-sends
+  (testing "the two markers, as the codes that follow an ESC"
+    (is (= :paste-start (k/paste-marker (codes-of "[200~"))))
+    (is (= :paste-end (k/paste-marker (codes-of "[201~")))))
+  (testing "a run that could still become either keeps the loop reading"
+    (is (= :partial (k/paste-marker [])))
+    (is (= :partial (k/paste-marker (codes-of "["))))
+    (is (= :partial (k/paste-marker (codes-of "[20"))))
+    (is (= :partial (k/paste-marker (codes-of "[200"))))
+    (is (= :partial (k/paste-marker (codes-of "[201")))))
+  (testing "and anything else is what it always was: alt-[ and some keys"
+    (is (nil? (k/paste-marker (codes-of "b"))) "alt-b")
+    (is (nil? (k/paste-marker (codes-of "[2~"))) "a real CSI key")
+    (is (nil? (k/paste-marker (codes-of "[202~"))))
+    (is (nil? (k/paste-marker (codes-of "[200~x"))) "past the end of a marker")))
+
+(deftest a-paste-is-an-event-like-any-other
+  (let [e (k/paste "two\nlines")]
+    (is (= :paste (:type e)))
+    (is (= "two\nlines" (:text e)))
+    (is (k/match? e :paste))
+    (is (k/match? e "paste"))
+    (is (not (k/printable? e)) "so a field inserts it as text, not as keystrokes")
+    (is (not (k/match? e "ctrl+c")) "and it can never be mistaken for a quit key")
+    (is (= "" (:text (k/paste nil))))))

@@ -17,6 +17,15 @@
     :keys          overrides for the bindings below
     :on-change     called with the new text
     :on-activate   called on Enter
+    :on-paste      called with the pasted text INSTEAD of inserting it, for a
+                   field that wants to decide what a paste means
+
+  A paste arrives as one event rather than as its characters (see
+  glimmer-tui.core), so a pasted newline no longer activates the field. Without
+  an :on-paste the text is inserted at the caret with its control characters —
+  a newline above all — flattened to spaces, because a one-line field has
+  nowhere to put a line break and ncurses would act on it rather than draw it.
+  An app that wants the line breaks takes :on-paste and keeps the text itself.
 
   The bindings are readline's, which is what a terminal user's fingers already
   know: ctrl-a/ctrl-e for the ends, ctrl-w to rub out a word, ctrl-u and ctrl-k
@@ -80,14 +89,34 @@
   (w/touch!)
   true)
 
-(defn- insert [wid ch]
+(defn- insert-text
+  "Insert `s` at the caret, as much of it as the character limit leaves room for."
+  [wid s]
   (let [{:keys [props state]} @wid
         v (value state)
         c (caret state)
-        limit (:char-limit props)]
-    (if (and limit (>= (count v) limit))
+        limit (:char-limit props)
+        room (if limit (max 0 (- limit (count v))) (count s))
+        s (subs s 0 (min (count s) room))]
+    (if (empty? s)
       true
-      (edit wid (str (subs v 0 c) ch (subs v c)) (inc c)))))
+      (edit wid (str (subs v 0 c) s (subs v c)) (+ c (count s))))))
+
+(defn- insert [wid ch] (insert-text wid (str ch)))
+
+(defn- one-line
+  "`s` with every control character turned into a space — see :on-paste above."
+  [s]
+  (apply str (map (fn [ch]
+                    (let [c (int ch)]
+                      (if (or (< c 32) (= c 127)) \space ch)))
+                  s)))
+
+(defn- paste [wid text]
+  (let [f (:on-paste (:props @wid))]
+    (if f
+      (do (f text) true)
+      (insert-text wid (one-line (or text ""))))))
 
 (defn- cut [wid from to]
   (let [v (value (:state @wid))
@@ -97,7 +126,7 @@
       (edit wid (str (subs v 0 from) (subs v to)) from)
       true)))
 
-(defn- handle-key [wid event]
+(defn- handle-binding [wid event]
   (let [{:keys [props state]} @wid
         v (value state)
         c (caret state)
@@ -117,6 +146,11 @@
       :delete-to-start  (cut wid 0 c)
       :delete-to-end    (cut wid c (count v))
       nil (when (k/printable? event) (insert wid (k/char-of event))))))
+
+(defn- handle-key [wid event]
+  (if (= :paste (:type event))
+    (paste wid (:text event))
+    (handle-binding wid event)))
 
 ;; --- painting ----------------------------------------------------------------
 (defn- echoed

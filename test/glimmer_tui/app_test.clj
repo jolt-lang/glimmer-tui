@@ -114,6 +114,79 @@
     (is (= "" @draft))
     (is (= [""] (take 1 (text screen))) "the entry cleared with the state")))
 
+(defn- terminal
+  "A scripted terminal: `codes` are handed out one per read, in order, and a nil
+  in the script is a read that timed out. This is what `decode-input!` takes in
+  place of wgetch, so the escape-sequence decoding can be driven without one."
+  [codes]
+  (let [left (atom (vec codes))]
+    (fn [_timeout]
+      (let [c (first @left)]
+        (swap! left #(if (seq %) (subvec % 1) %))
+        c))))
+
+(defn- events
+  "Everything `decode-input!` makes of a scripted terminal, until it runs dry."
+  [codes]
+  (let [read (terminal codes)]
+    (loop [out [] guard 0]
+      (if (> guard 100)
+        out
+        (if-let [e (tui/decode-input! read 0)]
+          (recur (conj out e) (inc guard))
+          (if (seq out) out (recur out (inc guard))))))))
+
+(defn- codes-of [s] (mapv int s))
+
+(deftest a-bracketed-paste-decodes-into-one-event
+  (let [esc 27]
+    (testing "the wrapper becomes a :paste carrying everything between it"
+      (is (= [{:type :paste :text "hi there"}]
+             (events (concat [esc] (codes-of "[200~hi there") [esc] (codes-of "[201~"))))))
+    (testing "a CR in a paste is the line break it stands for, not a Return"
+      (is (= "one\ntwo"
+             (:text (first (events (concat [esc] (codes-of "[200~one") [13]
+                                           (codes-of "two") [esc] (codes-of "[201~"))))))
+          "and a bare CR becomes one newline")
+      (is (= "one\ntwo"
+             (:text (first (events (concat [esc] (codes-of "[200~one") [13 10]
+                                           (codes-of "two") [esc] (codes-of "[201~"))))))
+          "as does a CRLF"))
+    (testing "a terminal that never sends the end marker ends the paste anyway"
+      (is (= [{:type :paste :text "cut off"}]
+             (events (concat [esc] (codes-of "[200~cut off"))))))
+    (testing "an escape sequence that only looked like one is given back in order"
+      (is (= [{:type :alt :ch \[ :base-type :char :code 91}
+              {:type :char :ch \2 :code 50}
+              {:type :char :ch \~ :code 126}]
+             (events (concat [esc] (codes-of "[2~"))))
+          "ESC [ 2 ~ is alt-[ and the keys that followed, exactly as before"))
+    (testing "and the ordinary escape keys still decode as they did"
+      (is (= [{:type :escape :code 27}] (events [esc])))
+      (is (= [{:type :alt :ch \b :base-type :char :code 98}]
+             (events [esc (int \b)])))
+      (is (= [{:type :char :ch \x :code 120}] (events [(int \x)]))))))
+
+(deftest a-paste-reaches-the-entry-whole-and-does-not-submit-it
+  ;; The bug this replaced: with the paste arriving as its characters, the line
+  ;; break in the middle was a Return, so half a stack trace was submitted before
+  ;; the rest of it had finished arriving.
+  (let [submitted (atom [])
+        draft (r/atom "")
+        app (fn [] [:vbox {}
+                    [:entry {:text @draft
+                             :on-change #(reset! draft %)
+                             :on-activate #(swap! submitted conj @draft)}]])
+        {:keys [screen]} (session app)]
+    (tui/press! (keys/paste "at foo\nat bar"))
+    (tui/frame!)
+    (is (= [] @submitted) "nothing was activated on the way through")
+    (is (= "at foo at bar" @draft) "and the whole paste landed in the field")
+    (is (= "at foo at bar" (first (text screen))))
+    (testing "Enter afterwards still submits, once, with all of it"
+      (tui/press! ENTER)
+      (is (= ["at foo at bar"] @submitted)))))
+
 (deftest a-checkbutton-round-trips-through-the-component
   (let [done (r/atom false)
         app (fn [] [:vbox {}
