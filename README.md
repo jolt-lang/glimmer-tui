@@ -120,7 +120,7 @@ numbers become labels, `nil` children are skipped, seqs are spliced.
 - Label: `:label`/`:text`, `:align`
 - Button: `:label`, `:brackets ["[ " " ]"]`
 - Entry: `:text`, `:placeholder`, `:echo :normal|:password|:none`, `:echo-char`,
-  `:char-limit`, `:width-request`, `:keys`
+  `:char-limit`, `:width-request`, `:keys`, `:on-paste`
 - Checkbutton: `:label`, `:active`, `:checked-mark`, `:unchecked-mark`
 - Frame: `:label`, `:label-align`, `:border`, `:border-color`
 - Separator: `:orientation`, `:char`
@@ -206,6 +206,7 @@ Frames take a border set: `:normal` (the default), `:rounded`, `:thick`,
 | arrows, `j`/`k`, `pgup`/`pgdn`, `ctrl-u`/`ctrl-d`, `g`/`G` | navigate a list, table or scroll |
 | printable, `Backspace`, `Delete`, arrows, `Home`/`End` | edit the focused entry |
 | `ctrl-a`/`ctrl-e`, `ctrl-w`, `ctrl-u`/`ctrl-k`, `alt-b`/`alt-f` | readline editing in an entry |
+| a paste | inserted into the focused entry in one piece, never as keystrokes |
 | `Esc` | close the topmost modal overlay |
 | `ctrl-c` / `ctrl-q` | quit (configurable with `:quit-keys`) |
 | mouse button 1 | focus and activate (or select the row) under the pointer |
@@ -244,6 +245,33 @@ be sitting in, and how an application binds a key of its own:
 Only what nobody wanted becomes a quit key, an `Esc` that closes a dialog, or an
 `Enter` that presses a button. That ordering is deliberate: it means `q` can be a
 quit key in an app that also has a text field, because the field sees it first.
+
+Pasted text is not typing, and the backend does not pretend it is. The terminal
+is put into bracketed-paste mode, so a paste arrives wrapped in `CSI 200~` …
+`CSI 201~` and is decoded into a single event:
+
+```clojure
+{:type :paste :text "at foo\nat bar"}
+```
+
+It is dispatched like a key — the focused widget first, then its ancestors — so
+an `:entry` inserts the whole thing at the caret, and a pasted newline is a
+character rather than a Return that submits half a stack trace. A field that
+wants to decide for itself takes `:on-paste`, which is given the text as pasted,
+line breaks and all, instead of it being inserted:
+
+```clojure
+[:entry {:text @draft
+         :on-change #(reset! draft %)
+         ;; this app keeps the line breaks and shows the field a stand-in
+         :on-paste (fn [text]
+                     (reset! attachment text)
+                     (reset! draft (str @draft "<pasted>")))}]
+```
+
+Without an `:on-paste` the control characters in a paste are flattened to
+spaces, because a one-line field has nowhere to put a line break and ncurses
+would act on it rather than draw it.
 
 `:autofocus true` says which widget starts focused. It is worth more in a
 terminal than it sounds: tree order gives the focus to whatever is highest on the
@@ -368,6 +396,13 @@ locale dependence that comes with it — with one departure: a cluster carrying
 U+FE0F is two cells, because that is what a terminal draws even where wcwidth
 reports one.
 
+Text that is entirely printable ASCII skips all of that: it cannot hold a
+combining mark, a wide glyph or an emoji, so its width is its length and a cut
+is an index. That is worth measuring, because a repaint measures the same label
+several times — during layout, again while clipping, again while aligning — and
+on an English UI every one of those is this case. A full screen of text went
+from 19ms a frame to 1.7ms, against a 30ms tick.
+
 ## Architecture
 
 - **`glimmer-tui.ffi`** — ncursesw and libc bindings, key codes, attribute bits,
@@ -397,9 +432,7 @@ Beta. The widget set covers what a terminal application usually needs and the
 reconciler, layout, focus, scrolling, overlays and input paths are covered by the
 headless suite; the ncurses path is covered by `jolt smoke`.
 
-Known limits. Bracketed paste is not decoded, so a paste arrives as its
-characters one at a time and a pasted newline activates the field. Mouse
-wheel-down is not reported by the mouse ABI macOS's ncurses was built with
+Known limits. Mouse wheel-down is not reported by the mouse ABI macOS's ncurses was built with
 (version 1 has no button 5), so on that build the wheel scrolls one way and the
 keyboard bindings are not optional. Colour is indexed, never 24-bit on the wire.
 

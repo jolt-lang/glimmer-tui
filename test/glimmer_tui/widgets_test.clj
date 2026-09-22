@@ -252,6 +252,23 @@
   (let [e (w/create! :entry {:text "secret" :echo :none})]
     (is (= [""] (paint e 10 1)))))
 
+(deftest an-entry-takes-a-paste-as-text-rather-than-as-keystrokes
+  (let [e (w/create! :entry {:text "log: "})]
+    (type! e (keys/paste "line one\nline two"))
+    (is (= "log: line one line two" (:value (:state @e)))
+        "the newline is a space, not an Enter and not a corrupted row")
+    (is (= 22 (:cursor (:state @e))) "the caret lands after what was pasted"))
+  (testing "a paste stops at the character limit like typing does"
+    (let [e (w/create! :entry {:text "" :char-limit 4})]
+      (type! e (keys/paste "abcdefgh"))
+      (is (= "abcd" (:value (:state @e))))))
+  (testing "a field can decide for itself what a paste means"
+    (let [seen (atom nil)
+          e (w/create! :entry {:text "keep" :on-paste #(reset! seen %)})]
+      (type! e (keys/paste "two\nlines"))
+      (is (= "two\nlines" @seen) "the handler is given the text as pasted")
+      (is (= "keep" (:value (:state @e))) "and nothing is inserted behind it"))))
+
 (deftest an-entry-scrolls-horizontally-to-keep-the-caret-in-view
   (let [e (w/create! :entry {:text "abcdefghij" :width-request 5})]
     (is (= ["fghij"] (paint e 5 1)) "the caret is at the end, so the tail shows")

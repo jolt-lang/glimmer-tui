@@ -52,7 +52,7 @@
 (defn ncurses-screen
   "A glimmer-tui.screen backed by stdscr. `win` is the pointer initscr returned."
   [win]
-  (let [colors (if (pos? (c/has-colors)) (max 0 (c/tigetnum "colors")) 0)
+  (let [colors (if (c/has-colors) (max 0 (c/tigetnum "colors")) 0)
         state (atom {:pairs {} :next-pair 1
                      :colors? (pos? colors)
                      :profile (color/profile colors)
@@ -121,6 +121,26 @@
   []
   (and (tty?) (usable-term?) (terminfo-ok?)))
 
+;; --- bracketed paste ---------------------------------------------------------
+;; In bracketed-paste mode a terminal wraps pasted text in CSI 200~ ... CSI 201~,
+;; which is the only way to tell a pasted newline from a pressed Return: without
+;; it a pasted stack trace arrives as keystrokes and every line break activates
+;; the focused field. glimmer-tui.core decodes the wrapper into a :paste event;
+;; this end of it is terminal lifecycle, so it belongs with start! and stop!.
+;;
+;; The mode has no terminfo capability and no ncurses entry point, so the two
+;; sequences are written to fd 1 by hand. A terminal that has never heard of the
+;; mode ignores a private-mode set it does not know, which is why this is safe to
+;; send unconditionally.
+(def ^:private paste-mode-on "\u001b[?2004h")
+(def ^:private paste-mode-off "\u001b[?2004l")
+
+(defn- emit!
+  "Write `s` straight to standard output, around ncurses rather than through it."
+  [s]
+  (c/write-fd 1 s (count s))
+  nil)
+
 (defn start!
   "Put the terminal into raw, keypad, mouse-reporting mode and return the stdscr
   pointer. Locale is set first: without a UTF-8 ctype, ncursesw renders every
@@ -151,7 +171,7 @@
     (c/notimeout win 0)            ; use the escape-sequence timer for ESC
     (c/curs-set 0)
     (c/leaveok win 1)
-    (when (pos? (c/has-colors))
+    (when (c/has-colors)
       (c/start-color)
       (c/use-default-colors))
     (c/mousemask c/ALL-MOUSE-EVENTS ffi/null)
@@ -159,6 +179,7 @@
     ;; immediately, which keeps the UI responsive instead of waiting to see
     ;; whether a double-click is coming.
     (c/mouseinterval 0)
+    (emit! paste-mode-on)
     (c/flushinp)
     win))
 
@@ -166,9 +187,12 @@
   "Hand the terminal back. Safe to call twice, which matters because the event
   loop's finally clause and an error handler may both reach for it."
   []
-  (when (zero? (c/isendwin))
+  (when-not (c/isendwin)
     (c/curs-set 1)
-    (c/endwin))
+    (c/endwin)
+    ;; after endwin, so it lands on a terminal ncurses has already flushed and
+    ;; handed back rather than in the middle of its teardown
+    (emit! paste-mode-off))
   nil)
 
 (defn read-key

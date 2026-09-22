@@ -1,5 +1,5 @@
 (ns glimmer-tui.ffi
-  "Raw C bindings for ncursesw, plus the two libc calls a terminal app needs.
+  "Raw C bindings for ncursesw, plus the three libc calls a terminal app needs.
   A thin defcfn layer — no logic. The screen implementation in
   glimmer-tui.curses is built on top of these.
 
@@ -47,6 +47,13 @@
 ;; glimmer-tui.curses checks first and throws something catchable instead.
 (ffi/defcfn isatty "isatty" [:int] :int)
 
+;; Bytes straight onto a file descriptor, for the one thing ncurses has no entry
+;; point for: the private mode that turns bracketed paste on and off (see
+;; glimmer-tui.curses). Going through write(2) rather than an ncurses output
+;; call keeps it unbuffered, which is what makes the disable reliable — a mode
+;; still set after the process exits is left for the user's shell to trip over.
+(ffi/defcfn write-fd "write" [:int :string :size_t] :ssize_t)
+
 ;; --- lifecycle ---------------------------------------------------------------
 ;; initscr returns stdscr, which is the only window this backend draws into:
 ;; layout is computed in jolt, so ncurses windows would buy nothing over one
@@ -58,7 +65,12 @@
 ;; "Error opening terminal" and exit. A NULL term means read $TERM.
 (ffi/defcfn setupterm "setupterm" [:pointer :int :pointer] :int)
 (ffi/defcfn endwin   "endwin"   [] :int)
-(ffi/defcfn isendwin "isendwin" [] :int)
+;; isendwin and has_colors return NCURSES_BOOL, which is a one-byte `bool` — so
+;; they bind as :bool, not :int. Read as an int, the upper three bytes are
+;; whatever the call left in the register: isendwin answered "the screen is
+;; already down" with a different large number every run, and stop! quietly
+;; skipped endwin on a terminal it had just taken over.
+(ffi/defcfn isendwin "isendwin" [] :bool)
 ;; raw rather than cbreak: raw also turns off ISIG, so ctrl-c arrives as key 3
 ;; instead of a SIGINT that would kill the process with the terminal still in
 ;; raw mode. The loop can then quit through its normal path and restore the tty.
@@ -97,7 +109,7 @@
 (ffi/defcfn doupdate    "doupdate"    [] :int)
 
 ;; --- colour ------------------------------------------------------------------
-(ffi/defcfn has-colors         "has_colors"         [] :int)
+(ffi/defcfn has-colors         "has_colors"         [] :bool)
 (ffi/defcfn start-color        "start_color"        [] :int)
 ;; Maps colour -1 onto the terminal's own default foreground/background, which is
 ;; what keeps a glimmer UI transparent over the user's colour scheme.

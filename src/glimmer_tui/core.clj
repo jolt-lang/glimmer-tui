@@ -24,8 +24,14 @@
   the way out — which is how Page Down reaches the scroll container a focused
   button happens to be sitting in — and only then to the loop's own bindings
   (Tab, Enter, quit). Mouse button 1 focuses and activates whatever is under the
-  pointer; the wheel scrolls whatever scroll container is under it."
-  (:require [glimmer.backend :as b]
+  pointer; the wheel scrolls whatever scroll container is under it.
+
+  A paste is not typing and is not delivered as typing: the terminal is put into
+  bracketed-paste mode, and the wrapper it sends is decoded here into a single
+  {:type :paste :text \"...\"} event, dispatched down the same path. That is what
+  keeps a pasted newline from pressing Return halfway through a stack trace."
+  (:require [clojure.string :as str]
+            [glimmer.backend :as b]
             [glimmer-tui.curses :as curses]
             [glimmer-tui.ffi :as c]
             [glimmer-tui.keys :as keys]
@@ -381,20 +387,99 @@
            :else nil))))
    nil))
 
+;; --- bracketed paste ---------------------------------------------------------
+;; The terminal is in bracketed-paste mode (curses/start!), so a paste arrives
+;; wrapped in ESC [ 200~ ... ESC [ 201~ and is turned into one
+;; {:type :paste :text "..."} event here. Without that, pasted text is
+;; indistinguishable from typing: every line break is a Return, so pasting a
+;; stack trace into a one-line field sends it as a dozen messages with the line
+;; breaks dropped.
+
+;; Bytes of a paste arrive 1-7ms apart where a person's keystrokes are hundreds
+;; (see issue #5), so a silence this long means the end marker is never coming —
+;; a terminal that died mid-paste stalls the loop for this and no longer.
+(def ^:private paste-timeout-ms 100)
+
+;; Codes read while looking for a marker that turned out not to be one. They are
+;; handed back in order, before anything new is read, so a sequence that only
+;; looked like a paste is typed exactly as it arrived.
+(defonce ^:private held-over (atom []))
+
+(defn- take-held-over! []
+  (when-let [c (first @held-over)]
+    (swap! held-over subvec 1)
+    c))
+
+(defn- after-escape!
+  "Read what follows an ESC for as long as it could still be a paste marker.
+  Returns [marker codes]: `marker` is :paste-start, :paste-end or nil, and
+  `codes` is everything read, so a run that was neither can be given back.
+
+  `timeout` is how long to wait for each code. Outside a paste it is 0 — ESC and
+  the key after it arrive together, and waiting would turn a pressed Escape into
+  half an alt chord. Inside one it is the paste timeout, because a paste big
+  enough to span two reads can put the end marker's ESC at the boundary."
+  [read timeout]
+  (loop [codes []]
+    (let [marker (keys/paste-marker codes)]
+      (if (not= :partial marker)
+        [marker codes]
+        (if-let [c (read timeout)]
+          (recur (conj codes c))
+          [nil codes])))))
+
+(defn- paste-text
+  "The codes collected between the markers, as text. A terminal sends CR for a
+  line break inside a paste — the same byte Return sends — so they are turned
+  back into newlines here, and a CRLF into one."
+  [codes]
+  (-> (apply str (map char codes))
+      (str/replace "\r\n" "\n")
+      (str/replace "\r" "\n")))
+
+(defn- read-paste!
+  "The text between the start marker and ESC [ 201~."
+  [read]
+  (loop [acc []]
+    (let [code (read paste-timeout-ms)]
+      (cond
+        (nil? code) (paste-text acc)
+        (= 27 code) (let [[marker codes] (after-escape! read paste-timeout-ms)]
+                      (if (= :paste-end marker)
+                        (paste-text acc)
+                        ;; an ESC the paste itself carried: keep it and carry on
+                        (recur (into (conj acc 27) codes))))
+        :else (recur (conj acc code))))))
+
+(defn decode-input!
+  "One event from `read`, a function of a timeout in milliseconds that answers a
+  key code or nil — the terminal, or a scripted one in a test.
+
+  ESC followed immediately by another key is an alt (meta) chord rather than two
+  keystrokes: that is how a terminal sends alt-b, and the only way to tell them
+  apart is that nothing human types a key within a millisecond of Escape. The
+  one exception is a bracketed-paste marker, which is also ESC and a key — that
+  becomes a single :paste event carrying the whole paste."
+  [read tick-ms]
+  (when-let [code (or (take-held-over!) (read tick-ms))]
+    (if (= 27 code)
+      (let [[marker codes] (after-escape! read 0)]
+        (case marker
+          :paste-start (keys/paste (read-paste! read))
+          ;; an end marker with nothing to end: the paste is already over
+          :paste-end nil
+          (if-let [next-code (first codes)]
+            (let [e (keys/decode next-code)]
+              (swap! held-over into (rest codes))
+              {:type :alt :ch (:ch e) :base-type (:type e) :code next-code})
+            (keys/decode 27))))
+      (keys/decode code))))
+
 ;; --- the event loop ----------------------------------------------------------
 (defn- read-event!
-  "One key from the terminal, decoded. ESC followed immediately by another key is
-  an alt (meta) chord rather than two keystrokes — that is how a terminal sends
-  alt-b, and the only way to tell them apart is that nothing human types a key
-  within a millisecond of Escape."
+  "One key from the terminal, decoded."
   [win tick-ms]
-  (when-let [code (curses/read-key win tick-ms)]
-    (if (= 27 code)
-      (if-let [next-code (curses/read-key win 0)]
-        (let [e (keys/decode next-code)]
-          {:type :alt :ch (:ch e) :base-type (:type e) :code next-code})
-        (keys/decode 27))
-      (keys/decode code))))
+  (decode-input! (fn [timeout] (curses/read-key win timeout)) tick-ms))
 
 (defn- run!
   "glimmer.backend's :run. Takes over the terminal, mounts the root component
