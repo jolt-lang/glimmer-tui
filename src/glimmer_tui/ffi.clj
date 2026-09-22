@@ -58,7 +58,12 @@
 ;; "Error opening terminal" and exit. A NULL term means read $TERM.
 (ffi/defcfn setupterm "setupterm" [:pointer :int :pointer] :int)
 (ffi/defcfn endwin   "endwin"   [] :int)
-(ffi/defcfn isendwin "isendwin" [] :int)
+;; isendwin and has_colors return NCURSES_BOOL, which is a one-byte `bool` — so
+;; they bind as :bool, not :int. Read as an int, the upper three bytes are
+;; whatever the call left in the register: isendwin answered "the screen is
+;; already down" with a different large number every run, and stop! quietly
+;; skipped endwin on a terminal it had just taken over.
+(ffi/defcfn isendwin "isendwin" [] :bool)
 ;; raw rather than cbreak: raw also turns off ISIG, so ctrl-c arrives as key 3
 ;; instead of a SIGINT that would kill the process with the terminal still in
 ;; raw mode. The loop can then quit through its normal path and restore the tty.
@@ -97,7 +102,7 @@
 (ffi/defcfn doupdate    "doupdate"    [] :int)
 
 ;; --- colour ------------------------------------------------------------------
-(ffi/defcfn has-colors         "has_colors"         [] :int)
+(ffi/defcfn has-colors         "has_colors"         [] :bool)
 (ffi/defcfn start-color        "start_color"        [] :int)
 ;; Maps colour -1 onto the terminal's own default foreground/background, which is
 ;; what keeps a glimmer UI transparent over the user's colour scheme.

@@ -52,7 +52,7 @@
 (defn ncurses-screen
   "A glimmer-tui.screen backed by stdscr. `win` is the pointer initscr returned."
   [win]
-  (let [colors (if (pos? (c/has-colors)) (max 0 (c/tigetnum "colors")) 0)
+  (let [colors (if (c/has-colors) (max 0 (c/tigetnum "colors")) 0)
         state (atom {:pairs {} :next-pair 1
                      :colors? (pos? colors)
                      :profile (color/profile colors)
@@ -151,7 +151,7 @@
     (c/notimeout win 0)            ; use the escape-sequence timer for ESC
     (c/curs-set 0)
     (c/leaveok win 1)
-    (when (pos? (c/has-colors))
+    (when (c/has-colors)
       (c/start-color)
       (c/use-default-colors))
     (c/mousemask c/ALL-MOUSE-EVENTS ffi/null)
@@ -166,7 +166,7 @@
   "Hand the terminal back. Safe to call twice, which matters because the event
   loop's finally clause and an error handler may both reach for it."
   []
-  (when (zero? (c/isendwin))
+  (when-not (c/isendwin)
     (c/curs-set 1)
     (c/endwin))
   nil)
