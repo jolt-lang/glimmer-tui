@@ -20,13 +20,39 @@
   it). One place it departs from wcwidth on purpose: a cluster carrying U+FE0F
   (variation selector-16, \"render the previous character as emoji\") is two
   cells wide, because that is what a terminal actually draws, even though
-  wcwidth reports the bare base character as one."
+  wcwidth reports the bare base character as one.
+
+  Text that is entirely printable ASCII takes a fast path through all of this:
+  it cannot hold a combining mark, a wide glyph or an emoji, so one character is
+  one cluster is one cell and measuring it is counting it. That matters because
+  a full-screen repaint measures the same labels several times a frame — during
+  layout, again while clipping, again while aligning — and on an English UI
+  every one of those measurements is this case."
   (:require [clojure.string :as str]))
 
 (defn- in-range? [c lo hi] (and (>= c lo) (<= c hi)))
 
 (def ^:private ZWJ 0x200d)
 (def ^:private VS16 0xfe0f)
+
+(defn- plain-text?
+  "Whether every character of `s` is printable ASCII (0x20-0x7e): no control
+  character, no combining mark, no wide glyph, no emoji — so `clusters` would
+  return one character per cluster and `char-width` would call every one of them
+  one cell, and the functions below can skip both.
+
+  It stops at 0x7e rather than at 0x300, where the first combining mark lives,
+  so that a control character still goes the long way round and `char-width`'s
+  zero-width rule keeps deciding what it is worth."
+  [s]
+  (let [n (count s)]
+    (loop [i 0]
+      (if (>= i n)
+        true
+        (let [c (int (nth s i))]
+          (if (or (< c 0x20) (> c 0x7e))
+            false
+            (recur (inc i))))))))
 
 (defn char-width
   "Cells occupied by the character with code point `c`: 0 for a combining mark,
@@ -88,8 +114,11 @@
   "Split `s` into grapheme clusters — the units a terminal draws in one cell (or
   two). Never splits an emoji sequence, a flag or a base-plus-mark pair."
   [s]
-  (if (empty? s)
-    []
+  (cond
+    (empty? s) []
+    ;; one character, one cluster — no pair of them can join
+    (plain-text? s) (mapv str s)
+    :else
     (loop [cps (map int (seq s)) cur [] out []]
       (if-let [c (first cps)]
         (cond
@@ -114,7 +143,10 @@
 (defn width
   "Cells occupied by string `s`."
   [s]
-  (reduce + 0 (map cluster-width (clusters (or s "")))))
+  (let [s (or s "")]
+    (if (plain-text? s)
+      (count s)
+      (reduce + 0 (map cluster-width (clusters s))))))
 
 (defn truncate
   "The longest prefix of `s` that fits in `cells` columns. A wide glyph that
@@ -122,8 +154,11 @@
   never cut in half."
   [s cells]
   (let [s (or s "")]
-    (if (<= (width s) cells)
-      s
+    (cond
+      ;; a character is a cell, so the cut is at the index and never mid-cluster
+      (plain-text? s) (if (<= (count s) cells) s (subs s 0 (max 0 cells)))
+      (<= (width s) cells) s
+      :else
       (loop [cs (clusters s) used 0 acc []]
         (if-let [c (first cs)]
           (let [w (cluster-width c)]
@@ -139,8 +174,11 @@
   edge is off the visible area."
   [s cells]
   (let [s (or s "")]
-    (if (<= cells 0)
-      s
+    (cond
+      (<= cells 0) s
+      ;; a character is a cell, so nothing can straddle the cut
+      (plain-text? s) (if (>= cells (count s)) "" (subs s cells))
+      :else
       (loop [cs (clusters s) skipped 0]
         (cond
           (= skipped cells) (apply str cs)

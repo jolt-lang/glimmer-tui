@@ -59,3 +59,22 @@
     (is (= " 本" (text/drop-cells "日本" 1)))
     (is (= 4 (text/width (text/drop-cells "日本x" 1))))
     (is (= " 本x" (text/drop-cells "日本x" 1)))))
+
+(deftest the-ascii-fast-path-agrees-with-the-cluster-walk
+  (testing "printable ASCII is measured by counting"
+    (is (= 12 (text/width "hello, world")))
+    (is (= 1 (text/width " ")))
+    (is (= 1 (text/width "~")) "0x7e is the top of the fast path")
+    (is (= ["a" "b" "c"] (text/clusters "abc"))))
+  (testing "a control character still goes the long way round"
+    (is (= 2 (text/width (str "a" (char 1) "b"))) "ctrl-a takes no cells")
+    (is (= 1 (text/width (str (char 127) "x"))) "DEL takes none either")
+    (is (= 2 (text/width (str "a\tb"))) "and neither does a tab"))
+  (testing "cutting ASCII lands where cutting clusters would"
+    (is (= "hello" (text/truncate "hello, world" 5)))
+    (is (= "" (text/truncate "hello" 0)))
+    (is (= "hello" (text/truncate "hello" 99)))
+    (is (= ", world" (text/drop-cells "hello, world" 5)))
+    (is (= "" (text/drop-cells "hello" 5)))
+    (is (= "" (text/drop-cells "hello" 99)))
+    (is (= "hel  " (text/pad "hel" 5)))))
