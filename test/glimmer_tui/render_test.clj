@@ -83,6 +83,29 @@
   (let [s (paint [:vbox {} [:button {:label "go"}]] 10 1 :button)]
     (is (nil? (scr/cursor s)) "a button hides it")))
 
+(deftest a-caret-hides-when-its-widget-scrolls-out-of-view
+  (let [s (paint [:vbox {}
+                  [:label {:label "hdr"}]
+                  [:scroll {:scrollbar false :height-request 1}
+                   [:vbox {}
+                    [:label {:label "l0"}]
+                    [:label {:label "l1"}]
+                    [:label {:label "l2"}]
+                    [:entry {:text "zzz"}]]]]
+                 10 3 :entry)]
+    (is (not-any? #(re-find #"zzz" %) (scr/lines s))
+        "the focused entry is scrolled below the viewport")
+    (is (nil? (scr/cursor s)) "so no caret is placed for it")))
+
+(deftest a-caret-at-the-end-of-a-full-entry-stays-inside-the-field
+  (doseq [t ["abcde" "abcdefghij"]]
+    (let [s (paint [:hbox {}
+                    [:entry {:text t :width-request 5}]
+                    [:label {:label "next"}]]
+                   12 1 :entry)]
+      (is (= [4 0] (scr/cursor s))
+          (str "typing at the end of " (pr-str t) " keeps the caret in the last cell")))))
+
 (deftest wide-glyphs-occupy-two-cells
   (let [s (paint [:hbox {} [:label {:label "日本"}] [:label {:label "x"}]] 10 1)]
     (is (= ["日本x"] (scr/lines s)))
