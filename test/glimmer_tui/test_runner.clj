@@ -30,6 +30,7 @@
                      glimmer-tui.widget-test
                      glimmer-tui.widgets-test
                      glimmer-tui.render-test
+                     glimmer-tui.curses-test
                      glimmer-tui.app-test]]
     ;; A namespace that fails to load registers no tests, so run-tests alone
     ;; would report it as a clean run; count it as a failure.

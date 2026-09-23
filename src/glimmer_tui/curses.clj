@@ -80,9 +80,13 @@
            (c/wattrset win c/A-NORMAL)))
        nil)
      :cursor! (fn [x y visible?]
+                ;; start! sets leaveok, which lets ncurses skip the move to the
+                ;; window's cursor position on refresh. Clear it before placing a
+                ;; caret, or the wmove never reaches the physical cursor, and put
+                ;; it back when hiding so a caret-less UI keeps the saving.
                 (if visible?
-                  (do (c/wmove win y x) (c/curs-set 1))
-                  (c/curs-set 0))
+                  (do (c/leaveok win 0) (c/wmove win y x) (c/curs-set 1))
+                  (do (c/curs-set 0) (c/leaveok win 1)))
                 nil)
      :present! (fn [] (c/wnoutrefresh win) (c/doupdate) nil)}))
 

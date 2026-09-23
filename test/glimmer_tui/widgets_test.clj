@@ -271,7 +271,7 @@
 
 (deftest an-entry-scrolls-horizontally-to-keep-the-caret-in-view
   (let [e (w/create! :entry {:text "abcdefghij" :width-request 5})]
-    (is (= ["fghij"] (paint e 5 1)) "the caret is at the end, so the tail shows")
+    (is (= ["ghij"] (paint e 5 1)) "the caret is at the end, so the tail shows with a cell left for it")
     (type! e HOME)
     (is (= ["abcde"] (paint e 5 1)))))
 

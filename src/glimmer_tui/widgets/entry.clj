@@ -163,10 +163,11 @@
 
 (defn- window-start
   "How many cells of the value are scrolled off to the left, so that the caret
-  stays inside a field `w` cells wide."
+  stays inside a field `w` cells wide. A caret after the last character needs a
+  cell of its own, so the value is treated as one cell wider when it ends there."
   [shown before w]
-  (let [wide (text/width shown)
-        at (text/width before)]
+  (let [at (text/width before)
+        wide (max (text/width shown) (inc at))]
     (if (<= wide w)
       0
       (max 0 (min (- wide w) (- at (dec w)))))))
