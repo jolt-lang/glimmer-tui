@@ -11,22 +11,18 @@
   them would trade universal availability for colour pairs past 256, which a
   terminal UI does not need.
 
-  Two ABI details worth knowing, both verified against the ncurses headers:
+  One ABI detail worth knowing, verified against the ncurses headers:
 
     attr_t / chtype is `unsigned int` (32 bits) on macOS and Linux alike — the
     LP64 `unsigned long` variant in the header sits behind a disabled `#if 0`.
     So attributes marshal as :uint.
 
-    MEVENT is { short id; int x, y, z; mmask_t bstate; } with mmask_t an
-    unsigned long, giving field offsets 0/4/8/12/16 and a 24-byte struct on
-    both platforms. glimmer-tui.curses reads x, y and bstate at those offsets.
-
-  Mouse button masks differ between NCURSES_MOUSE_VERSION 1 (macOS) and 2
-  (Linux): the per-button shift is 6 bits versus 5. The BUTTON1 bits are
-  identical in both (released 1, pressed 2, clicked 4), which is why this
-  backend only interprets button 1."
-  (:require [clojure.string :as str]
-            [jolt.ffi :as ffi]))
+  No mouse entry point is bound. ncurses' mouse ABI differs by build (the
+  per-button shift is 6 bits under mouse version 1, which is what stock macOS
+  ships, and 5 under version 2; version 1 has no button 5 at all), so the wheel
+  is read from SGR reports decoded in glimmer-tui.keys instead. See
+  glimmer-tui.curses for the terminal modes that turn those reports on."
+  (:require [jolt.ffi :as ffi]))
 
 ;; --- libc --------------------------------------------------------------------
 ;; A UTF-8 ctype locale must be set before initscr, or ncursesw renders
@@ -122,11 +118,6 @@
 ;; setupterm) has run.
 (ffi/defcfn tigetnum           "tigetnum"           [:string] :int)
 
-;; --- mouse -------------------------------------------------------------------
-(ffi/defcfn mousemask     "mousemask"     [:ulong :pointer] :ulong)
-(ffi/defcfn mouseinterval "mouseinterval" [:int] :int)
-(ffi/defcfn getmouse      "getmouse"      [:pointer] :int)
-
 ;; --- constants ---------------------------------------------------------------
 ;; Attributes: NCURSES_BITS(1U, n) is 1 << (n + 8).
 (def A-NORMAL    0)
@@ -170,33 +161,3 @@
 (def KEY-RESIZE 410)
 (def ERR -1)
 
-;; ALL_MOUSE_EVENTS is REPORT_MOUSE_POSITION-1 in both mouse ABI versions; this
-;; value covers every button event either version can report.
-(def ALL-MOUSE-EVENTS 0x7ffffff)
-;; BUTTON1 released/pressed/clicked — the same three bits in mouse version 1 and 2.
-(def BUTTON1-RELEASED 1)
-(def BUTTON1-PRESSED  2)
-(def BUTTON1-CLICKED  4)
-
-;; Higher buttons are not: NCURSES_MOUSE_MASK(b, m) shifts by (b-1) * SHIFT, and
-;; SHIFT is 5 under mouse version 1 (what macOS ships) and 6 under version 2
-;; (Linux). The wheel arrives as buttons 4 and 5, so those masks have to be
-;; computed for the platform rather than hard-coded. Version 1 predates button 5
-;; entirely; a wheel-down there reports nothing, which is why scrolling by wheel
-;; is one-directional on stock macOS ncurses and the keyboard bindings are not
-;; optional.
-(def ^:private mouse-shift
-  (if (str/includes? (str/lower-case (or (System/getProperty "os.name") "")) "mac") 5 6))
-
-(defn- mouse-mask [button bits] (bit-shift-left bits (* (dec button) mouse-shift)))
-
-(def BUTTON4-PRESSED (mouse-mask 4 2))
-(def BUTTON4-RELEASED (mouse-mask 4 1))
-(def BUTTON5-PRESSED (mouse-mask 5 2))
-(def BUTTON5-RELEASED (mouse-mask 5 1))
-
-;; MEVENT field offsets (see the namespace docstring).
-(def MEVENT-SIZE 24)
-(def MEVENT-X-OFFSET 4)
-(def MEVENT-Y-OFFSET 8)
-(def MEVENT-BSTATE-OFFSET 16)

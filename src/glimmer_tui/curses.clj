@@ -125,19 +125,33 @@
   []
   (and (tty?) (usable-term?) (terminfo-ok?)))
 
-;; --- bracketed paste ---------------------------------------------------------
+;; --- bracketed paste and mouse reporting --------------------------------------
 ;; In bracketed-paste mode a terminal wraps pasted text in CSI 200~ ... CSI 201~,
 ;; which is the only way to tell a pasted newline from a pressed Return: without
 ;; it a pasted stack trace arrives as keystrokes and every line break activates
 ;; the focused field. glimmer-tui.core decodes the wrapper into a :paste event;
 ;; this end of it is terminal lifecycle, so it belongs with start! and stop!.
 ;;
-;; The mode has no terminfo capability and no ncurses entry point, so the two
-;; sequences are written to fd 1 by hand. A terminal that has never heard of the
-;; mode ignores a private-mode set it does not know, which is why this is safe to
-;; send unconditionally.
+;; Mouse is the same story. ncurses' own mouse decoding is not used at all:
+;; its ABI differs by build (the button shift is 6 bits under mouse version 1,
+;; which is what stock macOS ships, and 5 under version 2), and a version-1 build
+;; has no button 5, so a wheel-down is simply not representable. Turning on SGR
+;; reporting and decoding ESC [ < b ; x ; y M|m here sidesteps both: the report
+;; is version-independent and carries wheel-up (64) and wheel-down (65) alike.
+;; glimmer-tui.keys/sgr-mouse does the decoding.
+;;
+;; None of these private modes has a terminfo capability or an ncurses entry
+;; point, so they are written to fd 1 by hand. A terminal that has never heard of
+;; one ignores a set it does not know, which is why this is safe unconditionally.
+;;
+;; 1000 (button press/release) and 1006 (SGR encoding) are all this needs. 1002,
+;; which adds motion while a button is held, is left off on purpose: there is no
+;; drag gesture to map that motion onto — a press is a click — so it would only
+;; arrive as a click on every cell the pointer crossed.
 (def ^:private paste-mode-on "\u001b[?2004h")
 (def ^:private paste-mode-off "\u001b[?2004l")
+(def ^:private mouse-mode-on "\u001b[?1000h\u001b[?1006h")   ; button events, SGR encoding
+(def ^:private mouse-mode-off "\u001b[?1006l\u001b[?1000l")
 
 (defn- emit!
   "Write `s` straight to standard output, around ncurses rather than through it."
@@ -171,19 +185,19 @@
     (c/raw)                        ; keys as typed, and ctrl-c as a key (see ffi)
     (c/noecho)                     ; the UI decides what appears, not the tty
     (c/nonl)                       ; keep Return distinguishable from newline
-    (c/keypad win 1)               ; decode arrows, F-keys, KEY_MOUSE, KEY_RESIZE
+    (c/keypad win 1)               ; decode arrows, F-keys, KEY_RESIZE
     (c/notimeout win 0)            ; use the escape-sequence timer for ESC
     (c/curs-set 0)
     (c/leaveok win 1)
     (when (c/has-colors)
       (c/start-color)
       (c/use-default-colors))
-    (c/mousemask c/ALL-MOUSE-EVENTS ffi/null)
-    ;; 0 disables click resolution: press and release arrive separately and
-    ;; immediately, which keeps the UI responsive instead of waiting to see
-    ;; whether a double-click is coming.
-    (c/mouseinterval 0)
+    ;; Mouse is NOT set up through ncurses: mousemask would make ncurses parse
+    ;; incoming reports itself and hand back KEY_MOUSE, which is the version-1
+    ;; path this backend exists to avoid. The reporting modes are turned on below
+    ;; and the raw reports decoded in glimmer-tui.core instead.
     (emit! paste-mode-on)
+    (emit! mouse-mode-on)
     (c/flushinp)
     win))
 
@@ -194,8 +208,9 @@
   (when-not (c/isendwin)
     (c/curs-set 1)
     (c/endwin)
-    ;; after endwin, so it lands on a terminal ncurses has already flushed and
+    ;; after endwin, so they land on a terminal ncurses has already flushed and
     ;; handed back rather than in the middle of its teardown
+    (emit! mouse-mode-off)
     (emit! paste-mode-off))
   nil)
 
@@ -207,15 +222,3 @@
   (c/wtimeout win timeout-ms)
   (let [ch (c/wgetch win)]
     (when (not= ch c/ERR) ch)))
-
-(defn read-mouse
-  "Pull the pending mouse event as {:x :y :bstate}, or nil. Called after wgetch
-  returns KEY_MOUSE."
-  []
-  (let [buf (ffi/alloc c/MEVENT-SIZE)]
-    (try
-      (when (zero? (c/getmouse buf))
-        {:x (ffi/read buf :int c/MEVENT-X-OFFSET)
-         :y (ffi/read buf :int c/MEVENT-Y-OFFSET)
-         :bstate (ffi/read buf :ulong c/MEVENT-BSTATE-OFFSET)})
-      (finally (ffi/free buf)))))

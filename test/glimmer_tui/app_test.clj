@@ -288,6 +288,64 @@
     (is (= ["[ b2 ]" "[ b3 ]" "[ b4 ]"] (text screen))
         "focus is on b4, which had to be brought back on screen to get there")))
 
+;; --- mouse (SGR reports) ------------------------------------------------------
+;; The wheel used to be recovered from ncurses' KEY_MOUSE + getmouse, whose ABI
+;; differs by ncurses build and, on stock macOS (mouse version 1), cannot report
+;; a wheel-down at all. It now arrives as an SGR report decoded straight from the
+;; input, so both directions scroll on every platform (issue #10).
+(defn- sgr-event
+  "The event a terminal sends for mouse button `b` at cell (x, y), as the loop
+  reads it: ESC [ < b ; x+1 ; y+1 M. It goes through the same decode-input! the
+  loop uses, so nothing here special-cases the test."
+  [b x y]
+  (first (events (concat [ESC] (codes-of (str "[<" b ";" (inc x) ";" (inc y) "M"))))))
+
+(deftest the-wheel-scrolls-both-ways-from-an-sgr-report
+  (let [app (fn [] [:scroll {:vexpand true :scrollbar false}
+                    (into [:vbox {}]
+                          (for [i (range 9)] [:label {:label (str "row " i)}]))])
+        {:keys [screen]} (session app 10 3)]
+    (is (= ["row 0" "row 1" "row 2"] (text screen)))
+    (testing "wheel-down (button 65) scrolls the container under the pointer"
+      (let [e (sgr-event 65 1 1)]
+        (is (= :mouse (:type e)))
+        (is (= :down (:wheel e)))
+        (tui/press! e)
+        (tui/frame!)
+        (is (= ["row 3" "row 4" "row 5"] (text screen)))))
+    (testing "wheel-up (button 64) scrolls back — the direction macOS ncurses drops"
+      (tui/press! (sgr-event 64 1 1))
+      (tui/frame!)
+      (is (= ["row 0" "row 1" "row 2"] (text screen))))
+    (testing "a horizontal wheel (66, 67) does not scroll vertically"
+      (tui/press! (sgr-event 66 1 1))
+      (tui/press! (sgr-event 67 1 1))
+      (tui/frame!)
+      (is (= ["row 0" "row 1" "row 2"] (text screen))))))
+
+(deftest a-left-press-activates-the-widget-under-the-pointer
+  (let [hit (atom nil)
+        app (fn [] [:vbox {}
+                    [:button {:label "one" :on-click #(reset! hit :one)}]
+                    [:button {:label "two" :on-click #(reset! hit :two)}]])
+        _ (session app)]
+    (tui/press! (sgr-event 0 1 1))
+    (is (= :two @hit) "SGR button 0 on row 1 is the second button")
+    (testing "a release is not a click"
+      (reset! hit nil)
+      (tui/press! (first (events (concat [ESC] (codes-of "[<0;2;2m")))))
+      (is (nil? @hit)))))
+
+;; ncurses 6 terminfo (Linux, Homebrew) has kmous=\E[<, so with keypad on
+;; ncurses matches the first three bytes of a report itself and hands the loop
+;; KEY_MOUSE (409) followed by the rest of it as plain characters.
+(deftest a-report-whose-prefix-ncurses-ate-is-still-one-mouse-event
+  (testing "KEY_MOUSE then b;x;yM decodes to the same event, and nothing is typed"
+    (is (= [{:type :mouse :button nil :wheel :down :x 4 :y 9 :action :press}]
+           (events (concat [409] (codes-of "65;5;10M"))))))
+  (testing "a KEY_MOUSE that is not followed by a report is dropped, not typed"
+    (is (= [] (events [409])))))
+
 ;; --- overlays ----------------------------------------------------------------
 (deftest a-modal-overlay-floats-over-the-page-and-keeps-focus-to-itself
   (let [open? (r/atom true)
