@@ -89,7 +89,7 @@
       (let [last (nth codes (dec n))]
         (cond
           (or (= last 77) (= last 109)) :mouse   ; M or m
-          (every? #(or (<= 48 % 59)) (subvec codes 2)) :partial
+          (every? #(<= 48 % 59) (subvec codes 2)) :partial
           :else nil))
       :else nil)))
 
