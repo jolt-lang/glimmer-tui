@@ -143,10 +143,15 @@
 ;; None of these private modes has a terminfo capability or an ncurses entry
 ;; point, so they are written to fd 1 by hand. A terminal that has never heard of
 ;; one ignores a set it does not know, which is why this is safe unconditionally.
+;;
+;; 1000 (button press/release) and 1006 (SGR encoding) are all this needs. 1002,
+;; which adds motion while a button is held, is left off on purpose: there is no
+;; drag gesture to map that motion onto — a press is a click — so it would only
+;; arrive as a click on every cell the pointer crossed.
 (def ^:private paste-mode-on "\u001b[?2004h")
 (def ^:private paste-mode-off "\u001b[?2004l")
-(def ^:private mouse-mode-on "\u001b[?1000h\u001b[?1002h\u001b[?1006h")   ; clicks, drags, SGR
-(def ^:private mouse-mode-off "\u001b[?1006l\u001b[?1002l\u001b[?1000l")
+(def ^:private mouse-mode-on "\u001b[?1000h\u001b[?1006h")   ; button events, SGR encoding
+(def ^:private mouse-mode-off "\u001b[?1006l\u001b[?1000l")
 
 (defn- emit!
   "Write `s` straight to standard output, around ncurses rather than through it."

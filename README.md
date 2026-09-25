@@ -433,7 +433,7 @@ Beta. The widget set covers what a terminal application usually needs and the
 reconciler, layout, focus, scrolling, overlays and input paths are covered by the
 headless suite; the ncurses path is covered by `jolt smoke`.
 
-Known limits. The wheel is read from SGR mouse reports (the terminal's 1000/1002/1006
+Known limits. The wheel is read from SGR mouse reports (the terminal's 1000/1006
 modes) rather than from ncurses, whose mouse ABI differs by build and, in the
 version stock macOS ships, has no wheel-down at all. Turning the modes on is
 unconditional, so a terminal that does not speak them simply gets no mouse — the
