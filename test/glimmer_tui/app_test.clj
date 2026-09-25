@@ -316,6 +316,11 @@
     (testing "wheel-up (button 64) scrolls back — the direction macOS ncurses drops"
       (tui/press! (sgr-event 64 1 1))
       (tui/frame!)
+      (is (= ["row 0" "row 1" "row 2"] (text screen))))
+    (testing "a horizontal wheel (66, 67) does not scroll vertically"
+      (tui/press! (sgr-event 66 1 1))
+      (tui/press! (sgr-event 67 1 1))
+      (tui/frame!)
       (is (= ["row 0" "row 1" "row 2"] (text screen))))))
 
 (deftest a-left-press-activates-the-widget-under-the-pointer
@@ -330,6 +335,16 @@
       (reset! hit nil)
       (tui/press! (first (events (concat [ESC] (codes-of "[<0;2;2m")))))
       (is (nil? @hit)))))
+
+;; ncurses 6 terminfo (Linux, Homebrew) has kmous=\E[<, so with keypad on
+;; ncurses matches the first three bytes of a report itself and hands the loop
+;; KEY_MOUSE (409) followed by the rest of it as plain characters.
+(deftest a-report-whose-prefix-ncurses-ate-is-still-one-mouse-event
+  (testing "KEY_MOUSE then b;x;yM decodes to the same event, and nothing is typed"
+    (is (= [{:type :mouse :button nil :wheel :down :x 4 :y 9 :action :press}]
+           (events (concat [409] (codes-of "65;5;10M"))))))
+  (testing "a KEY_MOUSE that is not followed by a report is dropped, not typed"
+    (is (= [] (events [409])))))
 
 ;; --- overlays ----------------------------------------------------------------
 (deftest a-modal-overlay-floats-over-the-page-and-keeps-focus-to-itself

@@ -101,18 +101,23 @@
 (defn sgr-mouse
   "Parse an SGR mouse report, ESC [ < b ; x ; y M|m, into an event:
 
-    {:type :mouse :button b :wheel :up|:down|nil :x :y :action :press|:release}
+    {:type :mouse :button b :wheel w :x :y :action :press|:release}
 
-  The button field carries the modifiers in its high bits and the button number
-  in the low two; a wheel is button 64 (:up) or 65 (:down). x and y are 1-based on
-  the wire and 0-based here. Returns nil for anything that is not a report."
+  `b` carries the shift/alt/ctrl modifiers (4, 8, 16) and the motion flag (32) on
+  top of the button; those are stripped. 0-2 are left, middle and right; 64-67 is
+  a wheel — :up, :down, :left or :right, with :button nil — and 128 and up are
+  the extra buttons, kept as their raw code so they are never taken for a left
+  click. x and y are 1-based on the wire and 0-based here. Returns nil for
+  anything that is not a report."
   [codes]
   (when-let [[_ b x y end] (re-matches #"\[\<(\d+);(\d+);(\d+)([Mm])" (sgr-text codes))]
-    (let [b (parse-long b)
-          btn (bit-and b 3)]
+    (let [base (bit-and (parse-long b) (bit-not 60))
+          wheel? (= 64 (bit-and base 192))]
       {:type :mouse
-       :button (if (>= b 64) 0 btn)
-       :wheel (cond (>= b 64) (if (zero? (bit-and b 1)) :up :down) :else nil)
+       :button (cond wheel? nil
+                     (< base 64) (bit-and base 3)
+                     :else base)
+       :wheel (when wheel? ([:up :down :left :right] (bit-and base 3)))
        :x (dec (parse-long x))
        :y (dec (parse-long y))
        :action (if (= "M" end) :press :release)})))

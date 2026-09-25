@@ -114,14 +114,24 @@
 
 (deftest sgr-mouse-reads-the-button-position-and-direction
   (testing "the wheel: button 64 is up, 65 is down, and both are reachable"
-    (is (= {:type :mouse :button 0 :wheel :up :x 4 :y 9 :action :press}
+    (is (= {:type :mouse :button nil :wheel :up :x 4 :y 9 :action :press}
            (k/sgr-mouse (codes-of "[<64;5;10M"))))
-    (is (= {:type :mouse :button 0 :wheel :down :x 4 :y 9 :action :press}
+    (is (= {:type :mouse :button nil :wheel :down :x 4 :y 9 :action :press}
            (k/sgr-mouse (codes-of "[<65;5;10M")))))
   (testing "button 0 is the left button; press and release are distinct"
     (is (= {:type :mouse :button 0 :wheel nil :x 2 :y 6 :action :press}
            (k/sgr-mouse (codes-of "[<0;3;7M"))))
     (is (= :release (:action (k/sgr-mouse (codes-of "[<0;3;7m"))))))
+  (testing "a horizontal wheel (66, 67) is not mistaken for up and down"
+    (is (= :left (:wheel (k/sgr-mouse (codes-of "[<66;5;10M")))))
+    (is (= :right (:wheel (k/sgr-mouse (codes-of "[<67;5;10M"))))))
+  (testing "modifier bits do not change which button or wheel it is"
+    (is (= :down (:wheel (k/sgr-mouse (codes-of "[<81;5;10M")))) "ctrl+wheel-down")
+    (is (= 0 (:button (k/sgr-mouse (codes-of "[<4;5;10M")))) "shift+left"))
+  (testing "extra buttons (128 and up) are neither a wheel nor a left click"
+    (let [e (k/sgr-mouse (codes-of "[<128;5;10M"))]
+      (is (nil? (:wheel e)))
+      (is (not= 0 (:button e)))))
   (testing "positions are 1-based on the wire and 0-based here"
     (let [e (k/sgr-mouse (codes-of "[<0;1;1M"))]
       (is (= [0 0] [(:x e) (:y e)]))))
