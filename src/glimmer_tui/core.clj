@@ -33,7 +33,6 @@
   (:require [clojure.string :as str]
             [glimmer.backend :as b]
             [glimmer-tui.curses :as curses]
-            [glimmer-tui.ffi :as c]
             [glimmer-tui.keys :as keys]
             [glimmer-tui.layout :as layout]
             [glimmer-tui.render :as render]
@@ -333,16 +332,17 @@
           (w/touch!)
           true)))))
 
-(defn- handle-mouse! []
-  (when-let [{:keys [x y bstate]} (curses/read-mouse)]
-    (let [wheel (or (:wheel-lines (:props (:tree @app))) 3)
-          set? (fn [& masks] (pos? (bit-and bstate (apply bit-or masks))))]
-      (cond
-        (set? c/BUTTON4-PRESSED c/BUTTON4-RELEASED) (scroll! x y (- wheel))
-        (set? c/BUTTON5-PRESSED c/BUTTON5-RELEASED) (scroll! x y wheel)
-        ;; button 1 press or click only: those bits mean the same thing in both
-        ;; ncurses mouse ABI versions (see glimmer-tui.ffi).
-        (set? c/BUTTON1-PRESSED c/BUTTON1-CLICKED) (click! x y))))
+(defn- handle-mouse!
+  "Act on a decoded mouse event (see glimmer-tui.keys/sgr-mouse): a wheel scrolls
+  whatever container is under the pointer — `wheel-lines` lines a notch, three by
+  default — and a left press focuses and activates (or selects in) whatever is
+  under it. Releases are ignored: acting on the press alone keeps a click
+  immediate rather than waiting to see whether a double-click is coming."
+  [{:keys [x y wheel button action]}]
+  (let [lines (or (:wheel-lines (:props (:tree @app))) 3)]
+    (cond
+      (and wheel (= action :press)) (scroll! x y (if (= wheel :up) (- lines) lines))
+      (and (zero? (or button 0)) (= action :press)) (click! x y)))
   nil)
 
 (defn- dispatch!
@@ -371,7 +371,7 @@
    (let [event (if (map? key) key (keys/decode key))]
      (cond
        (= :resize (:type event)) (w/touch!)
-       (= :mouse (:type event))  (handle-mouse!)
+       (= :mouse (:type event))  (handle-mouse! event)
        (= :tab (:type event))    (move-focus! 1)
        (= :back-tab (:type event)) (move-focus! -1)
        :else
@@ -411,9 +411,10 @@
     c))
 
 (defn- after-escape!
-  "Read what follows an ESC for as long as it could still be a paste marker.
-  Returns [marker codes]: `marker` is :paste-start, :paste-end or nil, and
-  `codes` is everything read, so a run that was neither can be given back.
+  "Read what follows an ESC for as long as it could still be a paste marker or an
+  SGR mouse report. Returns [marker codes]: `marker` is :paste-start, :paste-end,
+  :mouse or nil, and `codes` is everything read, so a run that was none of those
+  can be given back.
 
   `timeout` is how long to wait for each code. Outside a paste it is 0 — ESC and
   the key after it arrive together, and waiting would turn a pressed Escape into
@@ -421,7 +422,7 @@
   enough to span two reads can put the end marker's ESC at the boundary."
   [read timeout]
   (loop [codes []]
-    (let [marker (keys/paste-marker codes)]
+    (let [marker (keys/escape-run codes)]
       (if (not= :partial marker)
         [marker codes]
         (if-let [c (read timeout)]
@@ -458,8 +459,9 @@
   ESC followed immediately by another key is an alt (meta) chord rather than two
   keystrokes: that is how a terminal sends alt-b, and the only way to tell them
   apart is that nothing human types a key within a millisecond of Escape. The
-  one exception is a bracketed-paste marker, which is also ESC and a key — that
-  becomes a single :paste event carrying the whole paste."
+  exceptions are the two runs that are also ESC and then bytes: a bracketed-paste
+  marker, which becomes one :paste event carrying the whole paste, and an SGR
+  mouse report, which becomes one :mouse event."
   [read tick-ms]
   (when-let [code (or (take-held-over!) (read tick-ms))]
     (if (= 27 code)
@@ -468,6 +470,7 @@
           :paste-start (keys/paste (read-paste! read))
           ;; an end marker with nothing to end: the paste is already over
           :paste-end nil
+          :mouse (keys/sgr-mouse codes)
           (if-let [next-code (first codes)]
             (let [e (keys/decode next-code)]
               (swap! held-over into (rest codes))

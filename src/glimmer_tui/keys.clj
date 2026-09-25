@@ -61,19 +61,20 @@
       (>= code 32) {:type :char :ch (char code) :code code}
       :else {:type :unknown :code code})))
 
-;; --- bracketed paste ---------------------------------------------------------
-;; A terminal in bracketed-paste mode (glimmer-tui.curses turns it on) wraps
-;; pasted text in ESC [ 200~ ... ESC [ 201~. Neither marker is a terminfo key, so
-;; ncurses hands the loop their bytes one at a time — which is what `paste-start`
-;; and `paste-end` spell out, as the codes that follow the ESC.
+;; --- escape runs: bracketed paste and SGR mouse ------------------------------
+;; Two things arrive as ESC and then bytes one at a time: a bracketed paste, which
+;; wraps its text in ESC [ 200~ ... ESC [ 201~, and an SGR mouse report, which a
+;; terminal in 1006 mode sends as ESC [ < b ; x ; y M (press/drag) or ... m
+;; (release). Neither is a terminfo key, so ncurses hands the loop the bytes and
+;; the loop recognises them here — which is why one function classifies both.
 (def paste-start [91 50 48 48 126])             ; [200~
 (def paste-end   [91 50 48 49 126])             ; [201~
 
-(defn paste-marker
+(defn escape-run
   "What the codes read after an ESC have made so far: :paste-start, :paste-end,
-  :partial while the run could still become either, or nil for a run that is
-  neither — which the event loop hands back as the alt chord and the keys it
-  really was."
+  :mouse for a complete SGR mouse report, :partial while the run could still
+  become one of those, or nil for a run that is none — which the event loop hands
+  back as the alt chord and the keys it really was."
   [codes]
   (let [codes (vec codes)
         n (count codes)
@@ -82,7 +83,39 @@
       (= codes paste-start) :paste-start
       (= codes paste-end)   :paste-end
       (or (prefix-of? paste-start) (prefix-of? paste-end)) :partial
+      ;; an SGR mouse report, ESC [ < ... M|m
+      (= codes [91 60]) :partial
+      (and (>= n 3) (= 91 (nth codes 0)) (= 60 (nth codes 1)))
+      (let [last (nth codes (dec n))]
+        (cond
+          (or (= last 77) (= last 109)) :mouse   ; M or m
+          (every? #(or (<= 48 % 59)) (subvec codes 2)) :partial
+          :else nil))
       :else nil)))
+
+(defn- sgr-text
+  "The bytes of an escape run as text, for parsing."
+  [codes]
+  (apply str (map char codes)))
+
+(defn sgr-mouse
+  "Parse an SGR mouse report, ESC [ < b ; x ; y M|m, into an event:
+
+    {:type :mouse :button b :wheel :up|:down|nil :x :y :action :press|:release}
+
+  The button field carries the modifiers in its high bits and the button number
+  in the low two; a wheel is button 64 (:up) or 65 (:down). x and y are 1-based on
+  the wire and 0-based here. Returns nil for anything that is not a report."
+  [codes]
+  (when-let [[_ b x y end] (re-matches #"\[\<(\d+);(\d+);(\d+)([Mm])" (sgr-text codes))]
+    (let [b (parse-long b)
+          btn (bit-and b 3)]
+      {:type :mouse
+       :button (if (>= b 64) 0 btn)
+       :wheel (cond (>= b 64) (if (zero? (bit-and b 1)) :up :down) :else nil)
+       :x (dec (parse-long x))
+       :y (dec (parse-long y))
+       :action (if (= "M" end) :press :release)})))
 
 (defn paste
   "The event a decoded paste becomes. It is dispatched like a key — offered to

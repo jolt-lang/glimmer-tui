@@ -405,14 +405,14 @@ from 19ms a frame to 1.7ms, against a 30ms tick.
 
 ## Architecture
 
-- **`glimmer-tui.ffi`** — ncursesw and libc bindings, key codes, attribute bits,
-  the MEVENT layout. No logic.
+- **`glimmer-tui.ffi`** — ncursesw and libc bindings, key codes, attribute bits.
+  No logic.
 - **`glimmer-tui.text`** — grapheme clustering, display width, truncation.
 - **`glimmer-tui.color`** — colour props to palette indices, and down to what the
   terminal has.
 - **`glimmer-tui.border`** — the box-drawing sets.
-- **`glimmer-tui.keys`** — key codes to named events, and matching against
-  bindings.
+- **`glimmer-tui.keys`** — key codes to named events, bracketed paste, SGR mouse
+  reports, and matching against bindings.
 - **`glimmer-tui.screen`** — the paint surface: ncurses, an in-memory grid, or
   either one clipped to a rectangle.
 - **`glimmer-tui.widget`** — the widget registry and the node tree. Creating and
@@ -422,7 +422,8 @@ from 19ms a frame to 1.7ms, against a 30ms tick.
 - **`glimmer-tui.layout`** — measure and arrange, pure functions over snapshots.
 - **`glimmer-tui.render`** — paint a laid-out tree onto a screen, clipping each
   node to its parent and hoisting overlays to the top.
-- **`glimmer-tui.curses`** — terminal lifecycle, colour pair allocation, input.
+- **`glimmer-tui.curses`** — terminal lifecycle, colour pair allocation, the
+  private terminal modes (paste, mouse), and input.
 - **`glimmer-tui.core`** — the backend map, the event loop, focus, hit testing,
   scrolling and timers.
 
@@ -432,9 +433,12 @@ Beta. The widget set covers what a terminal application usually needs and the
 reconciler, layout, focus, scrolling, overlays and input paths are covered by the
 headless suite; the ncurses path is covered by `jolt smoke`.
 
-Known limits. Mouse wheel-down is not reported by the mouse ABI macOS's ncurses was built with
-(version 1 has no button 5), so on that build the wheel scrolls one way and the
-keyboard bindings are not optional. Colour is indexed, never 24-bit on the wire.
+Known limits. The wheel is read from SGR mouse reports (the terminal's 1000/1002/1006
+modes) rather than from ncurses, whose mouse ABI differs by build and, in the
+version stock macOS ships, has no wheel-down at all. Turning the modes on is
+unconditional, so a terminal that does not speak them simply gets no mouse — the
+keyboard bindings are still the fallback. Colour is indexed, never 24-bit on the
+wire.
 
 On hostile environments. `usable-terminal?` checks the three conditions that
 normally stop a UI from starting (no tty, no TERM, no terminfo entry), and
