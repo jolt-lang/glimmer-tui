@@ -144,14 +144,16 @@
 ;; point, so they are written to fd 1 by hand. A terminal that has never heard of
 ;; one ignores a set it does not know, which is why this is safe unconditionally.
 ;;
-;; 1000 (button press/release) and 1006 (SGR encoding) are all this needs. 1002,
-;; which adds motion while a button is held, is left off on purpose: there is no
-;; drag gesture to map that motion onto — a press is a click — so it would only
-;; arrive as a click on every cell the pointer crossed.
+;; 1000 (button press/release) and 1006 (SGR encoding) are the base. 1002 adds
+;; motion while a button is held, which is what a drag is: the loop does not act
+;; on a drag itself (see core/handle-mouse!), but an app's :on-mouse can — text
+;; selection above all — and without the reports arriving there is nothing to
+;; build one from. A terminal in 1000-only mode simply sends no motion reports,
+;; so turning 1002 on costs nothing there.
 (def ^:private paste-mode-on "\u001b[?2004h")
 (def ^:private paste-mode-off "\u001b[?2004l")
-(def ^:private mouse-mode-on "\u001b[?1000h\u001b[?1006h")   ; button events, SGR encoding
-(def ^:private mouse-mode-off "\u001b[?1006l\u001b[?1000l")
+(def ^:private mouse-mode-on "\u001b[?1000h\u001b[?1002h\u001b[?1006h") ; buttons, drag, SGR
+(def ^:private mouse-mode-off "\u001b[?1006l\u001b[?1002l\u001b[?1000l")
 
 (defn- emit!
   "Write `s` straight to standard output, around ncurses rather than through it."

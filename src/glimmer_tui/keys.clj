@@ -61,6 +61,56 @@
       (>= code 32) {:type :char :ch (char code) :code code}
       :else {:type :unknown :code code})))
 
+;; --- UTF-8 -------------------------------------------------------------------
+;; wgetch answers a byte at a time, and a terminal types anything past ASCII as
+;; a multi-byte UTF-8 sequence: 한 is ED 95 9C. Decoding each byte as a
+;; character of its own is mojibake, so the reader assembles a lead byte and the
+;; continuations that follow into the one character they spell — the same
+;; character wget_wch would have handed over whole. The decoding is pure and
+;; lives here so both halves of input use it: the keystroke path (core.clj's
+;; decode-input!) and the paste path.
+(defn utf8-length
+  "How many continuation bytes follow UTF-8 lead byte `b`, or nil when `b` is
+  not one (ASCII, a continuation, or C0/C1 — the overlong forms that no real
+  encoder emits, which exist only to smuggle NUL past a decoder)."
+  [b]
+  (cond
+    (<= 0xC2 b 0xDF) 1
+    (<= 0xE0 b 0xEF) 2
+    (<= 0xF0 b 0xF4) 3
+    :else nil))
+
+(defn utf8-char
+  "The character lead byte `lead` and continuation bytes `conts` spell, or nil
+  when they do not spell a sequence: the wrong count, or a byte in `conts` that
+  is not a continuation (0x80-0xBF)."
+  [lead conts]
+  (when-let [n (utf8-length lead)]
+    (when (and (= n (count conts))
+               (every? #(<= 0x80 % 0xBF) conts))
+      (char (reduce (fn [cp b] (bit-or (bit-shift-left cp 6) (bit-and b 0x3F)))
+                    (bit-and lead (dec (bit-shift-left 1 (- 7 n))))
+                    conts)))))
+
+(defn utf8-text
+  "The text a run of bytes spells, decoded as UTF-8. A malformed sequence — a
+  lead byte with no continuations behind it, a truncated one at the end of the
+  run — keeps its bytes as the characters decode would have made of them, so
+  whatever was actually typed arrives rather than nothing."
+  [codes]
+  (let [codes (vec codes)
+        n (count codes)]
+    (loop [i 0 out []]
+      (if (>= i n)
+        (apply str out)
+        (let [b (nth codes i)]
+          (if-let [len (and (>= b 0xC2) (<= b 0xF4) (utf8-length b))]
+            (let [conts (subvec codes (inc i) (min n (+ i 1 len)))]
+              (if-let [ch (utf8-char b conts)]
+                (recur (inc (+ i len)) (conj out ch))
+                (recur (inc i) (conj out (char b)))))
+            (recur (inc i) (conj out (char b)))))))))
+
 ;; --- escape runs: bracketed paste and SGR mouse ------------------------------
 ;; Two things arrive as ESC and then bytes one at a time: a bracketed paste, which
 ;; wraps its text in ESC [ 200~ ... ESC [ 201~, and an SGR mouse report, which a
@@ -101,17 +151,20 @@
 (defn sgr-mouse
   "Parse an SGR mouse report, ESC [ < b ; x ; y M|m, into an event:
 
-    {:type :mouse :button b :wheel w :x :y :action :press|:release}
+    {:type :mouse :button b :wheel w :x :y :action :press|:release :motion m}
 
   `b` carries the shift/alt/ctrl modifiers (4, 8, 16) and the motion flag (32) on
-  top of the button; those are stripped. 0-2 are left, middle and right; 64-67 is
+  top of the button; the modifiers are stripped, the motion flag is kept, so a
+  drag is distinguishable from a press — an app deciding \"click, unless it
+  turned into a drag\" needs both. 0-2 are left, middle and right; 64-67 is
   a wheel — :up, :down, :left or :right, with :button nil — and 128 and up are
   the extra buttons, kept as their raw code so they are never taken for a left
   click. x and y are 1-based on the wire and 0-based here. Returns nil for
   anything that is not a report."
   [codes]
   (when-let [[_ b x y end] (re-matches #"\[\<(\d+);(\d+);(\d+)([Mm])" (sgr-text codes))]
-    (let [base (bit-and (parse-long b) (bit-not 60))
+    (let [raw (parse-long b)
+          base (bit-and raw (bit-not 60))
           wheel? (= 64 (bit-and base 192))]
       {:type :mouse
        :button (cond wheel? nil
@@ -120,7 +173,8 @@
        :wheel (when wheel? ([:up :down :left :right] (bit-and base 3)))
        :x (dec (parse-long x))
        :y (dec (parse-long y))
-       :action (if (= "M" end) :press :release)})))
+       :action (if (= "M" end) :press :release)
+       :motion (pos? (bit-and raw 32))})))
 
 (defn paste
   "The event a decoded paste becomes. It is dispatched like a key — offered to

@@ -201,7 +201,7 @@ Frames take a border set: `:normal` (the default), `:rounded`, `:thick`,
 
 | Key | Effect |
 |---|---|
-| `Tab` / `Shift-Tab` | move focus forward / back, wrapping |
+| `Tab` / `Shift-Tab` | move focus forward / back, wrapping — unless a widget or an ancestor's `:on-key` claims the key first |
 | `Enter` / `Space` | activate the focused widget |
 | arrows, `j`/`k`, `pgup`/`pgdn`, `ctrl-u`/`ctrl-d`, `g`/`G` | navigate a list, table or scroll |
 | printable, `Backspace`, `Delete`, arrows, `Home`/`End` | edit the focused entry |
@@ -209,8 +209,13 @@ Frames take a border set: `:normal` (the default), `:rounded`, `:thick`,
 | a paste | inserted into the focused entry in one piece, never as keystrokes |
 | `Esc` | close the topmost modal overlay |
 | `ctrl-c` / `ctrl-q` | quit (configurable with `:quit-keys`) |
-| mouse button 1 | focus and activate (or select the row) under the pointer |
+| mouse button 1 press | focus and activate (or select the row) under the pointer |
+| a drag (press, then motion, then release) | not acted on by the loop; it reaches `:on-mouse` |
 | mouse wheel | scroll the container under the pointer |
+
+Anything past ASCII arrives decoded: a multi-byte UTF-8 sequence is one
+character, typed or pasted, so `한` is `한` and not `í` followed by two
+strays.
 
 Keys are named rather than numbered. `glimmer-tui.keys/decode` turns an ncurses
 key code into an event — `{:type :page-up}`, `{:type :ctrl :ch \u}` — and
@@ -386,6 +391,28 @@ keep it to logging or setting state. `tui/attach!` takes the same
 handler as an optional third argument, which is how the fault paths are tested
 headlessly.
 
+## Mouse beyond click and wheel
+
+The loop's own mouse handling is two gestures: a left press activates whatever
+is under the pointer, and the wheel scrolls whatever is under it. A drag — press,
+motion, release — and a release on its own are not acted on, because what they
+mean is the application's to decide: text selection, click-on-release, drag
+panels around. Every decoded mouse event is offered to `:on-mouse` before the
+loop acts on it, and a truthy return claims it:
+
+```clojure
+(ui/run app
+  :on-mouse (fn [{:keys [button action motion x y]}]
+              (when (and (= 0 button) (= action :release) (not motion))
+                (do-something-with x y))))
+```
+
+Return nil (or leave the handler off) and the loop behaves as it always did. A
+handler that throws reaches `:on-error` under the `:mouse` phase and the event
+reads as unclaimed. Motion reports only arrive from a terminal with drag
+reporting (mode 1002, enabled alongside the others); a terminal without it
+sends no drags and nothing is lost.
+
 ## Testing a terminal UI without a terminal
 
 Painting goes through `glimmer-tui.screen`, which is a map of functions with two
@@ -461,13 +488,12 @@ from 19ms a frame to 1.7ms, against a 30ms tick.
 Beta. The widget set covers what a terminal application usually needs and the
 reconciler, layout, focus, scrolling, overlays and input paths are covered by the
 headless suite; the ncurses path is covered by `jolt smoke`.
-
-Known limits. The wheel is read from SGR mouse reports (the terminal's 1000/1006
-modes) rather than from ncurses, whose mouse ABI differs by build and, in the
-version stock macOS ships, has no wheel-down at all. Turning the modes on is
-unconditional, so a terminal that does not speak them simply gets no mouse — the
-keyboard bindings are still the fallback. Colour is indexed, never 24-bit on the
-wire.
+Known limits. The wheel is read from SGR mouse reports (the terminal's
+1000/1002/1006 modes) rather than from ncurses, whose mouse ABI differs by
+build and, in the version stock macOS ships, has no wheel-down at all. Turning
+the modes on is unconditional, so a terminal that does not speak them simply
+gets no mouse — the keyboard bindings are still the fallback. Colour is
+indexed, never 24-bit on the wire.
 
 On hostile environments. `usable-terminal?` checks the three conditions that
 normally stop a UI from starting (no tty, no TERM, no terminfo entry), and

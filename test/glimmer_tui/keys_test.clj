@@ -90,6 +90,39 @@
     (is (not (k/match? e "ctrl+c")) "and it can never be mistaken for a quit key")
     (is (= "" (:text (k/paste nil))))))
 
+;; --- UTF-8 -------------------------------------------------------------------
+;; wgetch hands the loop one byte at a time, but a terminal types anything past
+;; ASCII as a multi-byte UTF-8 sequence: 한 is ED 95 9C. One byte one character
+;; is mojibake — í plus two box-drawing ghosts — so the sequence is assembled
+;; back into the character it is, which is what wget_wch would have returned.
+(deftest a-lead-byte-says-how-many-continuations-follow
+  (is (= 1 (k/utf8-length 0xC2)) "two-byte form: Latin-1 supplement and up")
+  (is (= 2 (k/utf8-length 0xED)))
+  (is (= 3 (k/utf8-length 0xF0)) "four-byte form: astral plane, emoji")
+  (is (nil? (k/utf8-length 0x41)) "ASCII is not a lead byte")
+  (is (nil? (k/utf8-length 0x80)) "nor is a continuation byte")
+  (is (nil? (k/utf8-length 0xC0)) "nor C0/C1, the overlong forms no encoder emits"))
+
+(deftest a-lead-and-its-continuations-are-one-character
+  (is (= \한 (k/utf8-char 0xED [0x95 0x9C])))
+  (is (= \é (k/utf8-char 0xC3 [0xA9])))
+  (is (= (char 0x1F600) (k/utf8-char 0xF0 [0x9F 0x98 0x80])))
+  (testing "and bytes that do not form a sequence are nobody's"
+    (is (nil? (k/utf8-char 0xED [0x95])) "too few continuations")
+    (is (nil? (k/utf8-char 0xED [0x95 0x9C 0x9C])) "too many")
+    (is (nil? (k/utf8-char 0xED [0x41 0x9C])) "a byte that is not a continuation")))
+
+(deftest utf8-text-decodes-a-run-of-bytes
+  (is (= "é한" (k/utf8-text [0xC3 0xA9 0xED 0x95 0x9C])))
+  (is (= "a한b" (k/utf8-text [0x61 0xED 0x95 0x9C 0x62])))
+  (is (= (str (char 0x1F600)) (k/utf8-text [0xF0 0x9F 0x98 0x80])))
+  (is (= "ab" (k/utf8-text [0x61 0x62])) "plain ASCII is untouched")
+  (testing "a malformed sequence keeps its bytes as what they are"
+    (is (= "íab" (k/utf8-text [0xED 0x61 0x62]))
+        "the lead falls back to its Latin-1 meaning and the rest types on")
+    (is (= (str (char 0xED) (char 0x95)) (k/utf8-text [0xED 0x95]))
+        "a truncated sequence at the end")))
+
 ;; --- SGR mouse ---------------------------------------------------------------
 ;; With SGR mouse reporting on (glimmer-tui.curses), a terminal sends every mouse
 ;; event as ESC [ < b ; x ; y M|m. ncurses' own decoding is bypassed on purpose:
@@ -114,14 +147,20 @@
 
 (deftest sgr-mouse-reads-the-button-position-and-direction
   (testing "the wheel: button 64 is up, 65 is down, and both are reachable"
-    (is (= {:type :mouse :button nil :wheel :up :x 4 :y 9 :action :press}
+    (is (= {:type :mouse :button nil :wheel :up :x 4 :y 9 :action :press :motion false}
            (k/sgr-mouse (codes-of "[<64;5;10M"))))
-    (is (= {:type :mouse :button nil :wheel :down :x 4 :y 9 :action :press}
+    (is (= {:type :mouse :button nil :wheel :down :x 4 :y 9 :action :press :motion false}
            (k/sgr-mouse (codes-of "[<65;5;10M")))))
   (testing "button 0 is the left button; press and release are distinct"
-    (is (= {:type :mouse :button 0 :wheel nil :x 2 :y 6 :action :press}
+    (is (= {:type :mouse :button 0 :wheel nil :x 2 :y 6 :action :press :motion false}
            (k/sgr-mouse (codes-of "[<0;3;7M"))))
     (is (= :release (:action (k/sgr-mouse (codes-of "[<0;3;7m"))))))
+  (testing "the motion bit (32) survives: a drag is a drag, not another press"
+    (is (= true (:motion (k/sgr-mouse (codes-of "[<32;3;7M"))))
+        "32 alone is a motion with the left button held")
+    (is (= true (:motion (k/sgr-mouse (codes-of "[<35;3;7m"))))
+        "35 = motion | release-report | left, a drag that ends off the widget")
+    (is (= false (:motion (k/sgr-mouse (codes-of "[<0;3;7M"))))))
   (testing "a horizontal wheel (66, 67) is not mistaken for up and down"
     (is (= :left (:wheel (k/sgr-mouse (codes-of "[<66;5;10M")))))
     (is (= :right (:wheel (k/sgr-mouse (codes-of "[<67;5;10M"))))))
