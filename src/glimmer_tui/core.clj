@@ -548,7 +548,8 @@
     :on-error      (fn [throwable phase]) called instead of ending the loop when
                    a key handler, timer, queued re-render or paint faults;
                    `phase` says which (:key, :timer, :render or :paint). Without
-                   it a fault ends ui/run, as it always has.
+                   it a fault ends ui/run, as it always has. The handler is
+                   not itself guarded: one that throws ends the loop.
 
   The terminal is restored in a finally, so a handler that throws still leaves a
   usable shell behind."
