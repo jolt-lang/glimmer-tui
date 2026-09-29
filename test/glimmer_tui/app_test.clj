@@ -485,6 +485,42 @@
     (reset! mode :boom)
     (is (= ::threw (threw? #(tui/frame!))))))
 
+(deftest a-component-whose-render-throws-is-reported-from-the-queue
+  ;; With the loop running, a ratom change queues the re-render rather than
+  ;; running it inline, so the component's throw lands in drain! — the path the
+  ;; issue #12 repro took, and the one the thunk-level test above stands in for.
+  (let [mode (r/atom :ok)
+        app (fn []
+              (when (= :boom @mode) (throw (ex-info "render blew up" {})))
+              [:label {:label (name @mode)}])
+        {:keys [screen faults]} (fault-session app)]
+    (reset! b/loop-running? true)
+    (try
+      (reset! mode :boom)
+      (is (empty? @faults) "the re-render is queued, not run inline")
+      (tui/drain!)
+      (is (= [[:render "render blew up"]] @faults))
+      (testing "the component re-renders once the state is good again"
+        (reset! mode :fine)
+        (tui/drain!)
+        (tui/frame!)
+        (is (= [[:render "render blew up"]] @faults))
+        (is (= "fine" (first (text screen)))))
+      (finally (reset! b/loop-running? false)))))
+
+(deftest an-on-error-that-throws-ends-the-loop
+  ;; The handler runs outside the guard, as the README says.
+  (let [root (w/node :window {})
+        app (fn [] [:vbox {:on-key (fn [_] (throw (ex-info "boom" {})))}
+                    [:button {:label "ok"}]])]
+    (tui/attach! root (scr/buffer-screen 30 8)
+                 (fn [_ _] (throw (ex-info "handler blew up" {}))))
+    (ui/mount root :window [app])
+    (tui/frame!)
+    (is (= "handler blew up"
+           (try (tui/press! (int \x)) nil
+                (catch :default t (ex-message t)))))))
+
 ;; --- the derived help bar ----------------------------------------------------
 (deftest the-help-bar-follows-the-focus
   (let [app (fn [] [:vbox {}
