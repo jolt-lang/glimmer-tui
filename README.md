@@ -357,6 +357,33 @@ thread allowed to touch widgets:
 everything when it exits. A widget that ran its own timer would repaint whether
 or not anything was looking at it, and would have to be told to stop.
 
+## Faults
+
+One exception used to end the whole session: the loop had no catch between the
+key handlers, the timers, the queued re-renders and the paint, so a single
+throwing handler took an editor or a chat down with it. Pass `:on-error` to
+`ui/run` and a fault is handed to you instead:
+
+```clojure
+(ui/run app
+  :on-error (fn [throwable phase]
+              ;; phase is :key, :timer, :render or :paint
+              (log/error throwable "fault in" phase)))
+```
+
+The loop keeps going. A key handler that throws costs that one key; a throwing
+timer costs that one tick — the timers behind it still fire, and a repeating one
+keeps its schedule. A failed paint leaves the terminal on the last good frame
+(the new one is never presented) and is retried on the next change, so a view
+that throws on every render reports the same fault as often as the state
+changes, not thirty times a second.
+
+Each queued re-render and each due timer is caught on its own, so a fault costs
+only itself. Without `:on-error` a fault ends `ui/run` as it always has, so
+nothing changes for an app that relies on that. `tui/attach!` takes the same
+handler as an optional third argument, which is how the fault paths are tested
+headlessly.
+
 ## Testing a terminal UI without a terminal
 
 Painting goes through `glimmer-tui.screen`, which is a map of functions with two
