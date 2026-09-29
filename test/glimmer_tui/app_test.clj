@@ -4,6 +4,7 @@
   the session a screen that is not a terminal, so a whole interactive app can be
   driven by pressing keys and clicking cells in a test."
   (:require [clojure.test :refer [deftest is testing]]
+            [glimmer.backend :as b]
             [glimmer.core :as ui]
             [glimmer.ratom :as r]
             [glimmer-tui.core :as tui]
@@ -387,6 +388,102 @@
     (is (false? (tui/pump-timers!)) "a cancelled timer stops firing")
     (tui/frame!)
     (is (= ["b"] (text screen)))))
+
+;; --- faults ------------------------------------------------------------------
+;; One exception in a key handler, a timer, a queued re-render or a paint used
+;; to end ui/run: the loop had no catch between drain!, pump-timers!, repaint!
+;; and press! (issue #12). With an :on-error each fault is reported there and
+;; costs only itself; without one it escapes, as it always did.
+(defn- fault-session
+  "A session whose faults are recorded into `faults` as [phase message] instead
+  of escaping: what ui/run does when it is given an :on-error."
+  ([component] (fault-session component (atom [])))
+  ([component faults]
+   (let [root (w/node :window {})
+         screen (scr/buffer-screen 30 8)]
+     (tui/attach! root screen
+                  (fn [t phase] (swap! faults conj [phase (ex-message t)])))
+     (ui/mount root :window [component])
+     (tui/frame!)
+     {:root root :screen screen :faults faults})))
+
+(defn- threw?
+  "Whether `f` throws, given no :on-error to catch it."
+  [f]
+  (try (f) ::no
+       (catch :default _ ::threw)))
+
+;; A widget whose paint faults, to drive the paint path with the same seam the
+;; real widgets use. Registered here because w/specs is the extension point.
+(w/register-widget! :bomb
+                    {:container :none
+                     :measure (fn [_ _] {:w 4 :h 1})
+                     :paint (fn [_ _ _ _ _] (throw (ex-info "paint blew up" {})))})
+
+(deftest a-throwing-key-handler-is-reported-and-the-session-carries-on
+  (let [clicked (atom nil)
+        app (fn [] [:vbox {:on-key (fn [e]
+                                     (when (keys/match? e "x")
+                                       (throw (ex-info "key handler blew up" {}))
+                                       true))}
+                    [:button {:label "ok" :on-click #(reset! clicked :ok)}]])
+        {:keys [faults]} (fault-session app)]
+    (tui/press! (int \x))
+    (is (= [[:key "key handler blew up"]] @faults))
+    (testing "the next key still reaches the UI"
+      (tui/press! ENTER)
+      (is (= :ok @clicked)))))
+
+(deftest a-throwing-key-handler-without-on-error-escapes-as-before
+  (let [app (fn [] [:vbox {:on-key (fn [_] (throw (ex-info "boom" {})))}
+                    [:button {:label "ok"}]])]
+    (session app)
+    (is (= ::threw (threw? #(tui/press! (int \x)))))))
+
+(deftest a-throwing-queued-rerender-costs-only-itself
+  ;; Work reaches drain! through the backend's :schedule when the loop is
+  ;; running, which is exactly how a re-render from another thread lands.
+  (let [ran (atom [])
+        {:keys [faults]} (fault-session (fn [] [:label {:label "fine"}]))]
+    (b/schedule #(throw (ex-info "re-render blew up" {})))
+    (b/schedule #(swap! ran conj :after))
+    (tui/drain!)
+    (is (= [[:render "re-render blew up"]] @faults))
+    (is (= [:after] @ran) "the queue behind the fault is not dropped")))
+
+(deftest a-throwing-timer-costs-only-itself
+  (let [ran (atom [])
+        {:keys [faults]} (fault-session (fn [] [:label {:label "fine"}]))]
+    (tui/after! 1 #(swap! ran conj :before))
+    (tui/after! 1 #(throw (ex-info "timer blew up" {})))
+    (tui/after! 1 #(swap! ran conj :after))
+    (Thread/sleep 5)
+    (tui/pump-timers!)
+    (is (= [[:timer "timer blew up"]] @faults))
+    (is (= [:before :after] @ran))))
+
+(deftest a-throwing-paint-is-reported-and-does-not-present-a-frame
+  (let [mode (r/atom :ok)
+        app (fn [] (if (= :boom @mode) [:bomb {}] [:label {:label "fine"}]))
+        {:keys [screen faults]} (fault-session app)]
+    (is (= ["fine"] (take 1 (text screen))))
+    (let [before (scr/frames screen)]
+      (reset! mode :boom)
+      (tui/frame!)
+      (is (= [[:paint "paint blew up"]] @faults))
+      (is (= before (scr/frames screen))
+          "present! never ran, so the terminal is still on the last frame")
+      (testing "and the next good frame paints normally"
+        (reset! mode :ok)
+        (tui/frame!)
+        (is (= "fine" (first (text screen))))))))
+
+(deftest a-throwing-paint-without-on-error-escapes-as-before
+  (let [mode (r/atom :ok)
+        app (fn [] (if (= :boom @mode) [:bomb {}] [:label {:label "fine"}]))]
+    (session app)
+    (reset! mode :boom)
+    (is (= ::threw (threw? #(tui/frame!))))))
 
 ;; --- the derived help bar ----------------------------------------------------
 (deftest the-help-bar-follows-the-focus

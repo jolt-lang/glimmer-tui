@@ -50,6 +50,20 @@
 ;; Work posted from other threads, run on the loop thread at the top of a tick.
 (defonce ^:private pending (atom []))
 
+;; The app's :on-error, installed by attach!/run!. nil means a fault escapes and
+;; ends the loop, which is what an app that never opted in expects.
+(defonce ^:private fault-handler (atom nil))
+
+(defn- guarded
+  "Run `f`, handing a fault in `phase` to the app's :on-error instead of letting
+  it end the loop. The handler sees the throwable and the phase (:key, :timer,
+  :render or :paint); with no handler installed the fault is rethrown, which has
+  always been the behaviour."
+  [phase f]
+  (if-let [on-error @fault-handler]
+    (try (f) (catch :default t (on-error t phase)))
+    (f)))
+
 (defn- schedule
   "glimmer.backend's :schedule. A ratom mutated on an nREPL worker thread must
   not repaint from that thread, so the re-render is queued here and the loop
@@ -58,15 +72,17 @@
   (swap! pending conj work)
   nil)
 
-(defn- drain!
+(defn drain!
   "Run everything queued by `schedule`. compare-and-set! rather than a plain
-  reset!, so work posted while the queue is being taken is not dropped."
+  reset!, so work posted while the queue is being taken is not dropped. Each
+  queued thunk is guarded on its own, so one that faults costs only itself (see
+  `guarded`)."
   []
   (loop []
     (let [q @pending]
       (when (seq q)
         (if (compare-and-set! pending q [])
-          (doseq [f q] (f))
+          (doseq [f q] (guarded :render f))
           (recur))))))
 
 ;; --- timers ------------------------------------------------------------------
@@ -109,7 +125,10 @@
 
 (defn pump-timers!
   "Fire every timer that is due. The event loop calls this once a tick; a test
-  drives it by hand."
+  drives it by hand. Each timer is guarded on its own (see `guarded`), so a
+  thunk that faults costs only itself — the timers behind it still fire, and a
+  periodic one is rescheduled before it runs, so it will throw again next period
+  rather than vanishing."
   []
   (let [t (now-ms)
         due (filter (fn [[_ e]] (<= (:due e) t)) (:entries @timers))]
@@ -117,7 +136,7 @@
       (if-let [period (:every e)]
         (swap! timers assoc-in [:entries id :due] (+ t period))
         (swap! timers update :entries dissoc id))
-      ((:f e)))
+      (guarded :timer (:f e)))
     (boolean (seq due))))
 
 ;; --- painting ----------------------------------------------------------------
@@ -178,9 +197,12 @@
   driver — a scripted demo, or a session served over a socket. Everything below
   (frame!, press!, click!) works the same whether the screen is a real terminal
   or an in-memory buffer."
-  [root screen]
-  (reset! app {:root root :screen screen :win nil :focus-id nil :quit? false})
-  nil)
+  ([root screen] (attach! root screen nil))
+  ([root screen on-error]
+   {:pre [(or (nil? on-error) (ifn? on-error))]}
+   (reset! app {:root root :screen screen :win nil :focus-id nil :quit? false})
+   (reset! fault-handler on-error)
+   nil))
 
 (defn focus-id
   "The id of the focused widget, or nil."
@@ -214,34 +236,40 @@
           (first ring)))))
 
 (defn- repaint! []
-  (let [{:keys [root screen]} @app
-        [cols rows] (scr/size screen)]
-    ;; Laying out can move a scroll container (to bring the focused widget into
-    ;; view), which changes the layout — so it is done to a fixed point, bounded
-    ;; because each pass can only ever scroll towards the target.
-    (loop [pass 0]
-      (let [snap (w/snapshot root)
-            ;; focus needs no geometry: it is tree order over what can take it
-            ring (w/focus-ring (focus-scope snap))
-            focus (resolve-focus snap ring (:focus-id @app))
-            binds (bindings-for snap focus)
-            ctx {:focus-id focus :bindings binds}]
-        ;; widgets that depend on the loop rather than on props (a help bar)
-        ;; get told before anything is measured, since it changes their size
-        (w/derive-state! root ctx)
-        (let [tree (layout/layout (w/snapshot root) cols rows)
-              ;; Only a CHANGE of focus scrolls: otherwise scrolling a container
-              ;; whose focused widget went off-screen would immediately scroll
-              ;; back, and the wheel would do nothing at all.
-              moved? (and (< pass 2)
-                          (not= focus (:visible-focus @app))
-                          (ensure-focus-visible! tree root focus))]
-          (if moved?
-            (recur (inc pass))
-            (do (swap! app assoc :tree tree :ring ring :focus-id focus
-                       :visible-focus focus)
-                (render/render! screen tree ctx)
-                nil)))))))
+  (guarded :paint
+           (fn []
+             (let [{:keys [root screen]} @app
+                   [cols rows] (scr/size screen)]
+               ;; Laying out can move a scroll container (to bring the focused
+               ;; widget into view), which changes the layout — so it is done to
+               ;; a fixed point, bounded because each pass can only ever scroll
+               ;; towards the target.
+               (loop [pass 0]
+                 (let [snap (w/snapshot root)
+                       ;; focus needs no geometry: it is tree order over what
+                       ;; can take it
+                       ring (w/focus-ring (focus-scope snap))
+                       focus (resolve-focus snap ring (:focus-id @app))
+                       binds (bindings-for snap focus)
+                       ctx {:focus-id focus :bindings binds}]
+                   ;; widgets that depend on the loop rather than on props (a
+                   ;; help bar) get told before anything is measured, since it
+                   ;; changes their size
+                   (w/derive-state! root ctx)
+                   (let [tree (layout/layout (w/snapshot root) cols rows)
+                         ;; Only a CHANGE of focus scrolls: otherwise scrolling
+                         ;; a container whose focused widget went off-screen
+                         ;; would immediately scroll back, and the wheel would
+                         ;; do nothing at all.
+                         moved? (and (< pass 2)
+                                     (not= focus (:visible-focus @app))
+                                     (ensure-focus-visible! tree root focus))]
+                     (if moved?
+                       (recur (inc pass))
+                       (do (swap! app assoc :tree tree :ring ring :focus-id focus
+                                  :visible-focus focus)
+                           (render/render! screen tree ctx)
+                           nil)))))))))
 
 (defn frame!
   "Lay out and paint the current tree, refreshing the focus ring. Returns the
@@ -370,23 +398,27 @@
   ([key] (press! key #{}))
   ([key quit-keys]
    (let [event (if (map? key) key (keys/decode key))]
-     (cond
-       (= :resize (:type event)) (w/touch!)
-       (= :mouse (:type event))  (handle-mouse! event)
-       (= :tab (:type event))    (move-focus! 1)
-       (= :back-tab (:type event)) (move-focus! -1)
-       :else
-       (when-not (dispatch! event)
-         (cond
-           ;; The quit keys are checked AFTER the widgets have passed, so that a
-           ;; text field typing `q` types a q. Nothing in the widget set consumes
-           ;; a ctrl chord it was not asked to, so ctrl-c always gets through.
-           (keys/match? event quit-keys) (quit!)
-           ;; Esc closes a dialog, likewise only once nothing else wanted it
-           (= :escape (:type event)) (close-overlay!)
-           (contains? #{:enter :space} (:type event)) (activate! (focused-widget))
-           :else nil))))
-   nil))
+     (guarded :key
+              (fn []
+                (cond
+                  (= :resize (:type event)) (w/touch!)
+                  (= :mouse (:type event))  (handle-mouse! event)
+                  (= :tab (:type event))    (move-focus! 1)
+                  (= :back-tab (:type event)) (move-focus! -1)
+                  :else
+                  (when-not (dispatch! event)
+                    (cond
+                      ;; The quit keys are checked AFTER the widgets have passed,
+                      ;; so that a text field typing `q` types a q. Nothing in
+                      ;; the widget set consumes a ctrl chord it was not asked
+                      ;; to, so ctrl-c always gets through.
+                      (keys/match? event quit-keys) (quit!)
+                      ;; Esc closes a dialog, likewise only once nothing else
+                      ;; wanted it
+                      (= :escape (:type event)) (close-overlay!)
+                      (contains? #{:enter :space} (:type event)) (activate! (focused-widget))
+                      :else nil)))))
+     nil)))
 
 ;; --- bracketed paste ---------------------------------------------------------
 ;; The terminal is in bracketed-paste mode (curses/start!), so a paste arrives
@@ -513,17 +545,21 @@
                    picked up.
     :auto-quit-ms  stop after roughly this long — for smoke tests, which have no
                    one to press a key.
+    :on-error      (fn [throwable phase]) called instead of ending the loop when
+                   a key handler, timer, queued re-render or paint faults;
+                   `phase` says which (:key, :timer, :render or :paint). Without
+                   it a fault ends ui/run, as it always has.
 
   The terminal is restored in a finally, so a handler that throws still leaves a
   usable shell behind."
   [opts mount-root!]
-  (let [{:keys [tick-ms auto-quit-ms quit-keys]
+  (let [{:keys [tick-ms auto-quit-ms quit-keys on-error]
          :or {tick-ms 30 quit-keys #{"ctrl+c" "ctrl+q"}}} opts
         win (curses/start!)
         screen (curses/ncurses-screen win)
         root (w/node :window {})]
     (try
-      (attach! root screen)
+      (attach! root screen on-error)
       (swap! app assoc :win win)
       (mount-root! root :window)
       (reset! b/loop-running? true)
@@ -545,7 +581,8 @@
         (reset! b/loop-running? false)
         (cancel-all!)
         (curses/stop!)
-        (reset! app nil)))))
+        (reset! app nil)
+        (reset! fault-handler nil)))))
 
 ;; --- the backend -------------------------------------------------------------
 (def backend
