@@ -342,10 +342,198 @@
 ;; KEY_MOUSE (409) followed by the rest of it as plain characters.
 (deftest a-report-whose-prefix-ncurses-ate-is-still-one-mouse-event
   (testing "KEY_MOUSE then b;x;yM decodes to the same event, and nothing is typed"
-    (is (= [{:type :mouse :button nil :wheel :down :x 4 :y 9 :action :press}]
+    (is (= [{:type :mouse :button nil :wheel :down :x 4 :y 9 :action :press :motion false}]
            (events (concat [409] (codes-of "65;5;10M"))))))
   (testing "a KEY_MOUSE that is not followed by a report is dropped, not typed"
     (is (= [] (events [409])))))
+
+;; --- non-ASCII input (issue #15) ----------------------------------------------
+;; A terminal types anything past ASCII as a multi-byte UTF-8 sequence, and a
+;; bracketed paste can carry the same. One byte one character is mojibake, so
+;; the reader assembles a sequence into the character it spells.
+(deftest a-multibyte-character-arrives-as-one-character
+  (testing "한, typed as ED 95 9C"
+    (is (= [{:type :char :ch \한 :code 0xED}]
+           (events [0xED 0x95 0x9C]))))
+  (testing "an emoji's four bytes are one character too"
+    (is (= [{:type :char :ch (char 0x1F600) :code 0xF0}]
+           (events [0xF0 0x9F 0x98 0x80]))))
+  (testing "ASCII around a sequence is unaffected"
+    (is (= [{:type :char :ch \a :code 97}
+            {:type :char :ch \한 :code 0xED}
+            {:type :char :ch \b :code 98}]
+           (events [0x61 0xED 0x95 0x9C 0x62]))))
+  (testing "a lead byte whose follow-up is not a continuation falls back to
+one character per byte, so nothing typed is swallowed"
+    (is (= [{:type :char :ch \í :code 0xED}
+            {:type :char :ch \a :code 97}
+            {:type :char :ch \b :code 98}]
+           (events [0xED 0x61 0x62]))))
+  (testing "a truncated sequence at the end of input does not stall the reader"
+    (is (= [{:type :char :ch \í :code 0xED}]
+           (events [0xED])))))
+
+(deftest a-paste-is-decoded-as-utf-8
+  (testing "é한, pasted"
+    (is (= [{:type :paste :text "é한"}]
+           (events (concat [ESC] (codes-of "[200~") [0xC3 0xA9 0xED 0x95 0x9C]
+                           [ESC] (codes-of "[201~"))))))
+  (testing "plain ASCII pastes exactly as before"
+    (is (= [{:type :paste :text "hi"}]
+           (events (concat [ESC] (codes-of "[200~hi") [ESC] (codes-of "[201~")))))))
+
+(deftest an-alt-chord-with-a-multibyte-base-is-one-event
+  (is (= [{:type :alt :ch \한 :base-type :char :code 0xED}]
+         (events [ESC 0xED 0x95 0x9C]))))
+
+(deftest a-typed-multibyte-character-reaches-the-entry
+  (let [draft (r/atom "")
+        app (fn [] [:vbox {}
+                    [:entry {:text @draft :on-change #(reset! draft %)}]])
+        {:keys [screen]} (session app)]
+    (tui/press! (first (events [0xED 0x95 0x9C])))
+    (tui/frame!)
+    (is (= "한" @draft))
+    (is (= "한" (first (text screen))))))
+
+;; --- mouse: release, drag, and an app hook (issue #15) ------------------------
+(defn- sgr-report
+  "The bytes a terminal sends for mouse button `b` at cell (x, y) ending in
+  `end` (\\M press / \\m release): ESC [ < b ; x+1 ; y+1 end."
+  [b x y end]
+  (concat [ESC] (codes-of (str "[<" b ";" (inc x) ";" (inc y) end))))
+
+(deftest a-drag-is-not-a-click
+  ;; A press that turns into a drag — press, motion reports, release elsewhere —
+  ;; used to activate the widget under the press, because the motion flag (32)
+  ;; was stripped and the release was dropped. The press alone no longer
+  ;; decides: motion reports act on nothing.
+  (let [hit (atom nil)
+        app (fn [] [:button {:label "press here" :on-click #(reset! hit :clicked)}])
+        _ (session app)]
+    (tui/press! (first (events (sgr-report 0 1 0 \M))))
+    (is (= :clicked @hit) "a plain press still activates")
+    (reset! hit nil)
+    (tui/press! (first (events (sgr-report 32 1 0 \M))))
+    (tui/press! (first (events (sgr-report 35 5 0 \m))))
+    (is (nil? @hit) "but the drag and its release do not click anything")))
+
+(defn- mouse-session
+  "A session whose mouse events reach `on-mouse` before the loop acts on them,
+  recorded into `seen`. Returns the map `session` does."
+  ([component] (mouse-session component (atom [])))
+  ([component seen]
+   (let [root (w/node :window {})
+         screen (scr/buffer-screen 30 8)]
+     (tui/attach! root screen nil (fn [e] (swap! seen conj e) nil))
+     (ui/mount root :window [component])
+     (tui/frame!)
+     {:root root :screen screen :seen seen})))
+
+(deftest on-mouse-sees-every-mouse-event-before-the-loop-acts
+  (let [clicked (atom nil)
+        app (fn [] [:button {:label "go" :on-click #(reset! clicked :go)}])
+        {:keys [seen]} (mouse-session app)]
+    (tui/press! (first (events (sgr-report 0 1 0 \M))))
+    (is (= 1 (count @seen)))
+    (is (= :press (:action (first @seen))))
+    (is (= false (:motion (first @seen))) "the event still carries its shape")
+    (is (= :go @clicked) "and the loop went on to click, the handler saying nil")
+    (testing "a release and a drag reach it too, which is the point"
+      (tui/press! (first (events (sgr-report 0 1 0 \m))))
+      (tui/press! (first (events (sgr-report 32 3 0 \M))))
+      (is (= 3 (count @seen)))
+      (is (= :release (:action (second @seen))))
+      (is (true? (:motion (nth @seen 2)))))))
+
+(deftest an-on-mouse-that-claims-the-event-stops-the-loop-acting
+  ;; The handler runs before the loop's own mouse handling; truthy means "this
+  ;; one is mine", which is how an app builds click-on-release, text selection
+  ;; or anything else the loop does not know about.
+  (let [clicked (atom nil)
+        root (w/node :window {})
+        screen (scr/buffer-screen 30 8)
+        app (fn [] [:button {:label "go" :on-click #(reset! clicked :go)}])]
+    (tui/attach! root screen nil (fn [_] true))
+    (ui/mount root :window [app])
+    (tui/frame!)
+    (tui/press! (first (events (sgr-report 0 1 0 \M))))
+    (is (nil? @clicked) "the claimed press never became a click")))
+
+(deftest a-throwing-on-mouse-is-reported-like-any-fault
+  (let [faults (atom [])
+        root (w/node :window {})
+        screen (scr/buffer-screen 30 8)
+        app (fn [] [:button {:label "go"}])]
+    (tui/attach! root screen
+                 (fn [t phase] (swap! faults conj [phase (ex-message t)]))
+                 (fn [_] (throw (ex-info "mouse handler blew up" {}))))
+    (ui/mount root :window [app])
+    (tui/frame!)
+    (tui/press! (first (events (sgr-report 0 1 0 \M))))
+    (is (= [[:mouse "mouse handler blew up"]] @faults))))
+
+;; --- Tab is offerable (issue #15) ----------------------------------------------
+;; The focus ring used to take Tab before any widget saw it. Now a widget (or an
+;; ancestor's :on-key) that claims :tab gets it; only an unclaimed Tab moves
+;; focus, exactly as before.
+(deftest a-widget-can-claim-tab
+  ;; A custom widget whose :key takes :tab — the shape of a text field offering
+  ;; completion. Registered here because w/specs is the extension point.
+  (w/register-widget! :tab-eater
+                      {:container :none
+                       :measure (fn [_ _] {:w 5 :h 1})
+                       :focusable? (fn [_] true)
+                       :paint (fn [screen rect _ _ _]
+                                (scr/put! screen (:x rect) (:y rect) "[TAB]" nil))
+                       :key (fn [_ event _] (= :tab (:type event)))})
+  (let [hit (atom nil)
+        app (fn [] [:vbox {}
+                    [:tab-eater {}]
+                    [:button {:label "go" :on-click #(reset! hit :go)}]])
+        _ (session app)]
+    (tui/press! TAB)
+    (tui/press! TAB)
+    (tui/press! ENTER)
+    (is (nil? @hit) "both Tabs were eaten, so focus never reached the button"))
+  (testing "an entry with a :keys action of its own declines it rather than throwing"
+    ;; the issue's completion-field shape: a custom binding through :keys. The
+    ;; field does not know the action, so the key is declined — not a fault —
+    ;; and the focus ring takes it, as an unclaimed Tab.
+    (let [draft (r/atom "")
+          app (fn [] [:vbox {}
+                      [:entry {:text @draft :on-change #(reset! draft %)
+                               :keys {:complete ["tab"]}}]
+                      [:button {:label "go"}]])
+          _ (session app)]
+      (tui/press! TAB)
+      (tui/press! ENTER)
+      (is (= "" @draft) "Enter activated the button, so the Tab moved focus"))))
+
+(deftest an-unclaimed-tab-still-moves-focus
+  (let [hit (atom nil)
+        app (fn [] [:vbox {}
+                    [:entry {:text ""}]
+                    [:button {:label "go" :on-click #(reset! hit :go)}]])
+        _ (session app)]
+    (tui/press! TAB)
+    (tui/press! ENTER)
+    (is (= :go @hit) "nothing claimed the Tab, so focus moved to the button")))
+
+(deftest an-ancestor-can-bind-tab
+  ;; This is the issue's repro shape: an app-level :on-key that wants to see Tab
+  ;; without a widget below it claiming it.
+  (let [seen (atom [])
+        app (fn [] [:vbox {:on-key (fn [e] (when (keys/match? e :tab)
+                                             (swap! seen conj :tab)
+                                             true))}
+                    [:button {:label "one"}]
+                    [:button {:label "two"}]])
+        _ (session app)]
+    (tui/press! TAB)
+    (is (= [:tab] @seen) "the ancestor was offered it first")
+    (tui/press! ENTER)
+    (is (= [:tab] @seen) "and Enter activated button one, so focus did not move")))
 
 ;; --- overlays ----------------------------------------------------------------
 (deftest a-modal-overlay-floats-over-the-page-and-keeps-focus-to-itself

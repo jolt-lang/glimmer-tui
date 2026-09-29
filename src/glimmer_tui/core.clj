@@ -54,11 +54,15 @@
 ;; ends the loop, which is what an app that never opted in expects.
 (defonce ^:private fault-handler (atom nil))
 
+;; The app's :on-mouse, likewise. nil (the default) means the loop's own mouse
+;; handling is all there is.
+(defonce ^:private mouse-handler (atom nil))
+
 (defn- guarded
   "Run `f`, handing a fault in `phase` to the app's :on-error instead of letting
-  it end the loop. The handler sees the throwable and the phase (:key, :timer,
-  :render or :paint); with no handler installed the fault is rethrown, which has
-  always been the behaviour."
+  it end the loop. The handler sees the throwable and the phase (:key, :mouse,
+  :timer, :render or :paint); with no handler installed the fault is rethrown,
+  which has always been the behaviour."
   [phase f]
   (if-let [on-error @fault-handler]
     (try (f) (catch :default t (on-error t phase)))
@@ -196,12 +200,16 @@
   terminal. The event loop calls this; so do the tests, and so could any other
   driver — a scripted demo, or a session served over a socket. Everything below
   (frame!, press!, click!) works the same whether the screen is a real terminal
-  or an in-memory buffer."
+  or an in-memory buffer. `on-error` is ui/run's :on-error and `on-mouse` its
+  :on-mouse, both optional."
   ([root screen] (attach! root screen nil))
-  ([root screen on-error]
-   {:pre [(or (nil? on-error) (ifn? on-error))]}
+  ([root screen on-error] (attach! root screen on-error nil))
+  ([root screen on-error on-mouse]
+   {:pre [(or (nil? on-error) (ifn? on-error))
+          (or (nil? on-mouse) (ifn? on-mouse))]}
    (reset! app {:root root :screen screen :win nil :focus-id nil :quit? false})
    (reset! fault-handler on-error)
+   (reset! mouse-handler on-mouse)
    nil))
 
 (defn focus-id
@@ -365,13 +373,16 @@
   "Act on a decoded mouse event (see glimmer-tui.keys/sgr-mouse): a wheel scrolls
   whatever container is under the pointer — `wheel-lines` lines a notch, three by
   default — and a left press focuses and activates (or selects in) whatever is
-  under it. Releases are ignored: acting on the press alone keeps a click
-  immediate rather than waiting to see whether a double-click is coming."
-  [{:keys [x y wheel button action]}]
+  under it. A drag is deliberately not acted on: with drag reporting on (see
+  glimmer-tui.curses) a press that turns into a drag is a gesture the loop does
+  not know the meaning of, and an app that does — text selection, click-on-
+  release — takes it through :on-mouse. Releases are left alone for the same
+  reason."
+  [{:keys [x y wheel button action motion]}]
   (let [lines (or (:wheel-lines (:props (:tree @app))) 3)]
     (cond
       (and (#{:up :down} wheel) (= action :press)) (scroll! x y (if (= wheel :up) (- lines) lines))
-      (and (= 0 button) (= action :press)) (click! x y)))
+      (and (= 0 button) (= action :press) (not motion)) (click! x y)))
   nil)
 
 (defn- dispatch!
@@ -389,11 +400,24 @@
                     true))))
             (reverse path)))))
 
+(defn- mouse-claimed?
+  "Run the app's :on-mouse, if there is one, guarding a fault under the :mouse
+  phase (see guarded): a handler that faults costs only itself and the event
+  reads as unclaimed. Returns whether the handler took the event."
+  [event]
+  (if-let [handler @mouse-handler]
+    (boolean
+      (if-let [on-error @fault-handler]
+        (try (handler event) (catch :default t (on-error t :mouse) false))
+        (handler event)))
+    false))
+
 (defn press!
   "Feed a key to the UI, exactly as the event loop does. `key` is either an
-  ncurses key code or an already-decoded event (see glimmer-tui.keys). Tab, Esc
-  and the quit keys are the loop's; everything else is offered to the focused
-  widget and its ancestors first. `quit-keys` defaults to none, which is what a
+  ncurses key code or an already-decoded event (see glimmer-tui.keys). Mouse
+  events go to the app's :on-mouse first, and Tab, Esc and the quit keys are the
+  loop's only once no widget wanted them — so a text field that wants Tab for
+  completion can have it. `quit-keys` defaults to none, which is what a
   test wants."
   ([key] (press! key #{}))
   ([key quit-keys]
@@ -402,9 +426,12 @@
               (fn []
                 (cond
                   (= :resize (:type event)) (w/touch!)
-                  (= :mouse (:type event))  (handle-mouse! event)
-                  (= :tab (:type event))    (move-focus! 1)
-                  (= :back-tab (:type event)) (move-focus! -1)
+                  (= :mouse (:type event))
+                  ;; :on-mouse sees the event first; truthy means the app took
+                  ;; it, and the loop's own handling is skipped. Without one,
+                  ;; the loop acts as it always has.
+                  (when-not (mouse-claimed? event)
+                    (handle-mouse! event))
                   :else
                   (when-not (dispatch! event)
                     (cond
@@ -416,6 +443,11 @@
                       ;; Esc closes a dialog, likewise only once nothing else
                       ;; wanted it
                       (= :escape (:type event)) (close-overlay!)
+                      ;; Tab moves focus only when nobody claimed it: a widget
+                      ;; that wants Tab (a field with completion) is offered it
+                      ;; through the same dispatch! as everything else
+                      (= :tab (:type event)) (move-focus! 1)
+                      (= :back-tab (:type event)) (move-focus! -1)
                       (contains? #{:enter :space} (:type event)) (activate! (focused-widget))
                       :else nil)))))
      nil)))
@@ -443,6 +475,38 @@
     (swap! held-over subvec 1)
     c))
 
+(defn- read-code!
+  "The next input code: one held over from a run that only looked like a marker,
+  if any, otherwise whatever `read` answers within `timeout`."
+  [read timeout]
+  (or (take-held-over!) (read timeout)))
+
+(defn- read-utf8-char!
+  "The character event for a UTF-8 sequence begun by lead byte `lead`: its
+  continuation bytes, read behind it, assembled into the one character they
+  spell (see glimmer-tui.keys). A terminal writes a whole character at once, so
+  the continuations are normally already buffered behind the lead; a read that
+  comes up short waits the paste timeout for the rest rather than declaring the
+  sequence malformed at the first gap, because a paste big enough to span two
+  reads can put the boundary in the middle of a character. When the bytes
+  genuinely do not spell a sequence the lead is decoded as the character it
+  always would have been and the continuations are held over, so nothing typed
+  is swallowed."
+  [read lead]
+  (let [n (or (keys/utf8-length lead) 0)
+        conts (loop [got []]
+                (if (>= (count got) n)
+                  got
+                  ;; through read-code!, so a continuation parked in held-over
+                  ;; by a run that swallowed the sequence is seen too
+                  (if-let [c (read-code! read paste-timeout-ms)]
+                    (recur (conj got c))
+                    got)))]
+    (if-let [ch (keys/utf8-char lead conts)]
+      {:type :char :ch ch :code lead}
+      (do (swap! held-over #(into (vec %) conts))
+          (keys/decode lead)))))
+
 (defn- after-escape!
   "Read what follows an ESC for as long as it could still be a paste marker or an
   SGR mouse report. Returns [marker codes]: `marker` is :paste-start, :paste-end,
@@ -466,11 +530,12 @@
            [nil codes]))))))
 
 (defn- paste-text
-  "The codes collected between the markers, as text. A terminal sends CR for a
-  line break inside a paste — the same byte Return sends — so they are turned
-  back into newlines here, and a CRLF into one."
+  "The codes collected between the markers, as text: decoded as UTF-8, because a
+  paste carries the same multi-byte sequences typing does. A terminal sends CR
+  for a line break inside a paste — the same byte Return sends — so they are
+  turned back into newlines here, and a CRLF into one."
   [codes]
-  (-> (apply str (map char codes))
+  (-> (keys/utf8-text codes)
       (str/replace "\r\n" "\n")
       (str/replace "\r" "\n")))
 
@@ -504,9 +569,13 @@
   itself and leaves the rest of the report as plain characters. That is read as
   the report it is. KEY_MOUSE only arrives because reporting is on, so whatever
   follows it is the terminal's, not the user's, and a run that does not parse is
-  dropped rather than typed."
+  dropped rather than typed.
+
+  Anything from 0xC2 up is the lead byte of a UTF-8 sequence, read as the one
+  character it spells (see read-utf8-char!); bytes below that decode as
+  themselves, exactly as before."
   [read tick-ms]
-  (when-let [code (or (take-held-over!) (read tick-ms))]
+  (when-let [code (read-code! read tick-ms)]
     (cond
       (= c/KEY-MOUSE code)
       (let [[marker codes] (after-escape! read 0 [91 60])]
@@ -520,10 +589,17 @@
           :paste-end nil
           :mouse (keys/sgr-mouse codes)
           (if-let [next-code (first codes)]
-            (let [e (keys/decode next-code)]
+            (do
               (swap! held-over into (rest codes))
-              {:type :alt :ch (:ch e) :base-type (:type e) :code next-code})
+              (if (keys/utf8-length next-code)
+                ;; the chord's base can itself be a multi-byte character
+                (let [e (read-utf8-char! read next-code)]
+                  {:type :alt :ch (:ch e) :base-type :char :code next-code})
+                (let [e (keys/decode next-code)]
+                  {:type :alt :ch (:ch e) :base-type (:type e) :code next-code})))
             (keys/decode 27))))
+
+      (keys/utf8-length code) (read-utf8-char! read code)
 
       :else (keys/decode code))))
 
@@ -546,21 +622,29 @@
     :auto-quit-ms  stop after roughly this long — for smoke tests, which have no
                    one to press a key.
     :on-error      (fn [throwable phase]) called instead of ending the loop when
-                   a key handler, timer, queued re-render or paint faults;
-                   `phase` says which (:key, :timer, :render or :paint). Without
-                   it a fault ends ui/run, as it always has. The handler is
-                   not itself guarded: one that throws ends the loop.
+                   a key handler, mouse handler, timer, queued re-render or paint
+                   faults; `phase` says which (:key, :mouse, :timer, :render or
+                   :paint). Without it a fault ends ui/run, as it always has.
+                   The handler is not itself guarded: one that throws ends the
+                   loop.
+    :on-mouse      (fn [event]) called with every decoded mouse event — press,
+                   release, wheel and drag alike — BEFORE the loop acts on it.
+                   Return truthy to claim the event and the loop's own handling
+                   (scrolling, clicking) is skipped, which is how an app builds
+                   the gestures the loop does not know: click-on-release, text
+                   selection, drag-to-scroll. Faults in it reach :on-error under
+                   the :mouse phase and read as unclaimed.
 
   The terminal is restored in a finally, so a handler that throws still leaves a
   usable shell behind."
   [opts mount-root!]
-  (let [{:keys [tick-ms auto-quit-ms quit-keys on-error]
+  (let [{:keys [tick-ms auto-quit-ms quit-keys on-error on-mouse]
          :or {tick-ms 30 quit-keys #{"ctrl+c" "ctrl+q"}}} opts
         win (curses/start!)
         screen (curses/ncurses-screen win)
         root (w/node :window {})]
     (try
-      (attach! root screen on-error)
+      (attach! root screen on-error on-mouse)
       (swap! app assoc :win win)
       (mount-root! root :window)
       (reset! b/loop-running? true)
@@ -583,7 +667,8 @@
         (cancel-all!)
         (curses/stop!)
         (reset! app nil)
-        (reset! fault-handler nil)))))
+        (reset! fault-handler nil)
+        (reset! mouse-handler nil)))))
 
 ;; --- the backend -------------------------------------------------------------
 (def backend

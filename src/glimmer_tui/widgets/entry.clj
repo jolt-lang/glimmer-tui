@@ -145,7 +145,11 @@
       :delete-word-fwd  (cut wid c (word-end v c))
       :delete-to-start  (cut wid 0 c)
       :delete-to-end    (cut wid c (count v))
-      nil (when (k/printable? event) (insert wid (k/char-of event))))))
+      ;; an action an app added through :keys that this field does not know is
+      ;; declined rather than thrown on, so a custom binding (Tab for
+      ;; completion) simply leaves the key free for whoever wants it
+      nil (when (k/printable? event) (insert wid (k/char-of event)))
+      false)))
 
 (defn- handle-key [wid event]
   (if (= :paste (:type event))
