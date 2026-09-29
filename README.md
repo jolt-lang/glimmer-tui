@@ -380,7 +380,9 @@ changes, not thirty times a second.
 
 Each queued re-render and each due timer is caught on its own, so a fault costs
 only itself. Without `:on-error` a fault ends `ui/run` as it always has, so
-nothing changes for an app that relies on that. `tui/attach!` takes the same
+nothing changes for an app that relies on that. The handler itself runs
+unguarded, so an `:on-error` that throws ends `ui/run` with that exception;
+keep it to logging or setting state. `tui/attach!` takes the same
 handler as an optional third argument, which is how the fault paths are tested
 headlessly.
 
