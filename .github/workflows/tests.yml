@@ -6,6 +6,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install jolt
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -18,8 +20,19 @@ jobs:
           # Install through jolt's own install script rather than resolving the
           # release asset here: it owns the archive and binary naming and
           # verifies the checksum.
-          curl -fsSL https://raw.githubusercontent.com/jolt-lang/jolt/main/install \
-            | bash -s -- --dir "$HOME/.jolt"
+          # Both the script and the latest version come through the
+          # authenticated API: anonymous requests from a shared runner IP get
+          # rate limited (403), which is what failed the v0.2.10 tag build.
+          # Passing --version keeps the script from making that anonymous call
+          # itself.
+          for i in 1 2 3; do
+            gh api -H "Accept: application/vnd.github.raw" \
+              repos/jolt-lang/jolt/contents/install > "$RUNNER_TEMP/jolt-install" && break
+            [ "$i" = 3 ] && exit 1
+            sleep 5
+          done
+          version=$(gh release view -R jolt-lang/jolt --json tagName -q .tagName)
+          bash "$RUNNER_TEMP/jolt-install" --dir "$HOME/.jolt" --version "$version"
           echo "$HOME/.jolt" >> "$GITHUB_PATH"
       - name: Test
         run: JOLT_PWD="$PWD" jolt -M:test
