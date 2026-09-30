@@ -278,6 +278,28 @@ Without an `:on-paste` the control characters in a paste are flattened to
 spaces, because a one-line field has nowhere to put a line break and ncurses
 would act on it rather than draw it.
 
+A big paste over a slow link can stall mid-stream — longer, sometimes, than the
+100ms a read inside a paste waits before deciding the end marker is never
+coming. When that happens the paste is split: the first half arrives as a
+`:paste` that ended by timeout rather than its marker, and the rest arrives as
+ordinary keys, its line breaks as Return. The event says which happened:
+
+```clojure
+{:type :paste :text "half a stack tr" :cut? true}
+```
+
+`ui/run` takes `:paste-timeout-ms` for exactly this. Raise it and a paste that
+stalls rides the stall out instead of being cut:
+
+```clojure
+(ui/run app :paste-timeout-ms 500)
+```
+
+Or leave the timeout alone and watch `:cut?` in a widget's key handling: a
+paste so marked is the first part of one whose rest is about to arrive as
+keystrokes, so an app that submits on Return can hold the half-paste back until
+something whole is in hand.
+
 `:autofocus true` says which widget starts focused. It is worth more in a
 terminal than it sounds: tree order gives the focus to whatever is highest on the
 screen, usually a filter field, and a focused field swallows every letter — so an

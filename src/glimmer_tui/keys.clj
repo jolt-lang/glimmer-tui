@@ -179,9 +179,15 @@
 (defn paste
   "The event a decoded paste becomes. It is dispatched like a key — offered to
   the focused widget, then to its ancestors — so a widget that wants the text in
-  one piece takes it, and one that does not is simply not typed into."
-  [text]
-  {:type :paste :text (or text "")})
+  one piece takes it, and one that does not is simply not typed into.
+
+  `cut?` is true when the paste ended by the paste timeout rather than its end
+  marker — a big paste over a slow link, stalled mid-stream longer than the
+  timeout. The keys that follow are the rest of it, not typing."
+  ([text] (paste text false))
+  ([text cut?]
+   (cond-> {:type :paste :text (or text "")}
+     cut? (assoc :cut? true))))
 
 (defn printable?
   "Whether `event` is a character a text field should insert."

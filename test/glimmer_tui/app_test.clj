@@ -126,16 +126,35 @@
         (swap! left #(if (seq %) (subvec % 1) %))
         c))))
 
+(defn- events-with
+  "Everything `decode-input!` makes of `read` until it runs dry, waiting
+  `paste-ms` for each code inside a paste — the knob ui/run's
+  :paste-timeout-ms turns."
+  [read paste-ms]
+  (loop [out [] guard 0]
+    (if (> guard 100)
+      out
+      (if-let [e (tui/decode-input! read 0 paste-ms)]
+        (recur (conj out e) (inc guard))
+        (if (seq out) out (recur out (inc guard)))))))
+
 (defn- events
   "Everything `decode-input!` makes of a scripted terminal, until it runs dry."
   [codes]
-  (let [read (terminal codes)]
-    (loop [out [] guard 0]
-      (if (> guard 100)
-        out
-        (if-let [e (tui/decode-input! read 0)]
-          (recur (conj out e) (inc guard))
-          (if (seq out) out (recur out (inc guard))))))))
+  (events-with (terminal codes) 100))
+
+(defn- slow-terminal
+  "A scripted terminal over a slow link: `entries` are [delay code] pairs, and a
+  code is answered only to a read willing to wait its delay. One that will not
+  wait that long gets nil — the silence a paste stalling mid-stream longer than
+  the paste timeout shows the loop."
+  [entries]
+  (let [left (atom (vec entries))]
+    (fn [timeout]
+      (let [[delay code] (first @left)]
+        (when (and code (>= timeout delay))
+          (swap! left #(if (seq %) (subvec % 1) %))
+          code)))))
 
 (defn- codes-of [s] (mapv int s))
 
@@ -154,8 +173,9 @@
                                            (codes-of "two") [esc] (codes-of "[201~"))))))
           "as does a CRLF"))
     (testing "a terminal that never sends the end marker ends the paste anyway"
-      (is (= [{:type :paste :text "cut off"}]
-             (events (concat [esc] (codes-of "[200~cut off"))))))
+      (is (= [{:type :paste :text "cut off" :cut? true}]
+             (events (concat [esc] (codes-of "[200~cut off"))))
+          "and says it was cut short, because what follows may be the rest of it"))
     (testing "an escape sequence that only looked like one is given back in order"
       (is (= [{:type :alt :ch \[ :base-type :char :code 91}
               {:type :char :ch \2 :code 50}
@@ -167,6 +187,33 @@
       (is (= [{:type :alt :ch \b :base-type :char :code 98}]
              (events [esc (int \b)])))
       (is (= [{:type :char :ch \x :code 120}] (events [(int \x)]))))))
+
+(deftest a-paste-that-stalls-longer-than-the-timeout-is-cut-and-says-so
+  (let [esc 27
+        ;; ESC [ 200~ "cut", then a 500ms silence before "off" and the end
+        ;; marker — a big paste over a slow link
+        script (concat (map (fn [c] [0 c]) (concat [esc] (codes-of "[200~cut")))
+                       [[500 111]]
+                       (map (fn [c] [0 c]) (concat (codes-of "ff") [esc] (codes-of "[201~"))))]
+    (testing "at the default timeout the stall cuts the paste in two"
+      (is (= [{:type :paste :text "cut" :cut? true}]
+             (events-with (slow-terminal script) 100))))
+    (testing "a :paste-timeout-ms that covers the stall rides it out"
+      (is (= [{:type :paste :text "cutoff"}]
+             (events-with (slow-terminal script) 600))))))
+
+(deftest every-read-inside-a-paste-waits-the-configured-timeout
+  (let [esc 27
+        asked (atom [])
+        script (concat [esc] (codes-of "[200~hi") [esc] (codes-of "[201~"))
+        term (terminal script)
+        read (fn [timeout] (swap! asked conj timeout) (term timeout))]
+    (events-with read 500)
+    (is (= [0 0 0 0 0 0] (take 6 @asked))
+        "the start marker is read with the tick, as before")
+    (is (= [0] (remove #{500} (drop 6 @asked)))
+        "and every read from the paste body on waits :paste-timeout-ms — the one
+         0 left is the dry poll after the paste event")))
 
 (deftest a-paste-reaches-the-entry-whole-and-does-not-submit-it
   ;; The bug this replaced: with the paste arriving as its characters, the line

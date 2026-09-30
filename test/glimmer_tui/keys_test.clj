@@ -88,7 +88,11 @@
     (is (k/match? e "paste"))
     (is (not (k/printable? e)) "so a field inserts it as text, not as keystrokes")
     (is (not (k/match? e "ctrl+c")) "and it can never be mistaken for a quit key")
-    (is (= "" (:text (k/paste nil))))))
+    (is (= "" (:text (k/paste nil))))
+    (is (nil? (:cut? e)) "a paste that ended with its marker arrived whole")
+    (is (= {:type :paste :text "x" :cut? true} (k/paste "x" true))
+        "one cut short by the paste timeout says so, so an app knows the keys
+         that follow are the rest of it")))
 
 ;; --- UTF-8 -------------------------------------------------------------------
 ;; wgetch hands the loop one byte at a time, but a terminal types anything past
