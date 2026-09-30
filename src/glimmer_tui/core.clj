@@ -462,8 +462,11 @@
 
 ;; Bytes of a paste arrive 1-7ms apart where a person's keystrokes are hundreds
 ;; (see issue #5), so a silence this long means the end marker is never coming —
-;; a terminal that died mid-paste stalls the loop for this and no longer.
-(def ^:private paste-timeout-ms 100)
+;; a terminal that died mid-paste stalls the loop for this and no longer. A slow
+;; link can stall a big paste longer than that mid-stream (issue #17), which is
+;; what ui/run's :paste-timeout-ms is for: raise it, and a paste still cut short
+;; says so with :cut?.
+(def ^:private default-paste-timeout-ms 100)
 
 ;; Codes read while looking for a marker that turned out not to be one. They are
 ;; handed back in order, before anything new is read, so a sequence that only
@@ -486,20 +489,20 @@
   continuation bytes, read behind it, assembled into the one character they
   spell (see glimmer-tui.keys). A terminal writes a whole character at once, so
   the continuations are normally already buffered behind the lead; a read that
-  comes up short waits the paste timeout for the rest rather than declaring the
+  comes up short waits `timeout` for the rest rather than declaring the
   sequence malformed at the first gap, because a paste big enough to span two
   reads can put the boundary in the middle of a character. When the bytes
   genuinely do not spell a sequence the lead is decoded as the character it
   always would have been and the continuations are held over, so nothing typed
   is swallowed."
-  [read lead]
+  [read timeout lead]
   (let [n (or (keys/utf8-length lead) 0)
         conts (loop [got []]
                 (if (>= (count got) n)
                   got
                   ;; through read-code!, so a continuation parked in held-over
                   ;; by a run that swallowed the sequence is seen too
-                  (if-let [c (read-code! read paste-timeout-ms)]
+                  (if-let [c (read-code! read timeout)]
                     (recur (conj got c))
                     got)))]
     (if-let [ch (keys/utf8-char lead conts)]
@@ -540,15 +543,19 @@
       (str/replace "\r" "\n")))
 
 (defn- read-paste!
-  "The text between the start marker and ESC [ 201~."
-  [read]
+  "The text between the start marker and ESC [ 201~, as one :paste event. A run
+  of reads that comes up dry — a terminal that died, or a link slow enough to
+  stall longer than the paste timeout — ends the paste too, and the event says
+  :cut?, so an app can tell the keys that follow are the rest of it rather than
+  typing."
+  [read timeout]
   (loop [acc []]
-    (let [code (read paste-timeout-ms)]
+    (let [code (read timeout)]
       (cond
-        (nil? code) (paste-text acc)
-        (= 27 code) (let [[marker codes] (after-escape! read paste-timeout-ms)]
+        (nil? code) (keys/paste (paste-text acc) true)
+        (= 27 code) (let [[marker codes] (after-escape! read timeout)]
                       (if (= :paste-end marker)
-                        (paste-text acc)
+                        (keys/paste (paste-text acc))
                         ;; an ESC the paste itself carried: keep it and carry on
                         (recur (into (conj acc 27) codes))))
         :else (recur (conj acc code))))))
@@ -573,41 +580,47 @@
 
   Anything from 0xC2 up is the lead byte of a UTF-8 sequence, read as the one
   character it spells (see read-utf8-char!); bytes below that decode as
-  themselves, exactly as before."
-  [read tick-ms]
-  (when-let [code (read-code! read tick-ms)]
-    (cond
-      (= c/KEY-MOUSE code)
-      (let [[marker codes] (after-escape! read 0 [91 60])]
-        (when (= :mouse marker) (keys/sgr-mouse codes)))
+  themselves, exactly as before.
 
-      (= 27 code)
-      (let [[marker codes] (after-escape! read 0)]
-        (case marker
-          :paste-start (keys/paste (read-paste! read))
-          ;; an end marker with nothing to end: the paste is already over
-          :paste-end nil
-          :mouse (keys/sgr-mouse codes)
-          (if-let [next-code (first codes)]
-            (do
-              (swap! held-over into (rest codes))
-              (if (keys/utf8-length next-code)
-                ;; the chord's base can itself be a multi-byte character
-                (let [e (read-utf8-char! read next-code)]
-                  {:type :alt :ch (:ch e) :base-type :char :code next-code})
-                (let [e (keys/decode next-code)]
-                  {:type :alt :ch (:ch e) :base-type (:type e) :code next-code})))
-            (keys/decode 27))))
+  `paste-ms` is how long a read inside a paste waits for the next code before
+  giving the paste up as cut — ui/run's :paste-timeout-ms. A paste that ended
+  by timeout rather than its end marker carries :cut?, so an app knows the keys
+  that follow are the rest of it, not typing."
+  ([read tick-ms] (decode-input! read tick-ms default-paste-timeout-ms))
+  ([read tick-ms paste-ms]
+   (when-let [code (read-code! read tick-ms)]
+     (cond
+       (= c/KEY-MOUSE code)
+       (let [[marker codes] (after-escape! read 0 [91 60])]
+         (when (= :mouse marker) (keys/sgr-mouse codes)))
 
-      (keys/utf8-length code) (read-utf8-char! read code)
+       (= 27 code)
+       (let [[marker codes] (after-escape! read 0)]
+         (case marker
+           :paste-start (read-paste! read paste-ms)
+           ;; an end marker with nothing to end: the paste is already over
+           :paste-end nil
+           :mouse (keys/sgr-mouse codes)
+           (if-let [next-code (first codes)]
+             (do
+               (swap! held-over into (rest codes))
+               (if (keys/utf8-length next-code)
+                 ;; the chord's base can itself be a multi-byte character
+                 (let [e (read-utf8-char! read paste-ms next-code)]
+                   {:type :alt :ch (:ch e) :base-type :char :code next-code})
+                 (let [e (keys/decode next-code)]
+                   {:type :alt :ch (:ch e) :base-type (:type e) :code next-code})))
+             (keys/decode 27))))
 
-      :else (keys/decode code))))
+       (keys/utf8-length code) (read-utf8-char! read paste-ms code)
+
+       :else (keys/decode code)))))
 
 ;; --- the event loop ----------------------------------------------------------
 (defn- read-event!
   "One key from the terminal, decoded."
-  [win tick-ms]
-  (decode-input! (fn [timeout] (curses/read-key win timeout)) tick-ms))
+  [win tick-ms paste-ms]
+  (decode-input! (fn [timeout] (curses/read-key win timeout)) tick-ms paste-ms))
 
 (defn- run!
   "glimmer.backend's :run. Takes over the terminal, mounts the root component
@@ -619,6 +632,15 @@
     :tick-ms       input poll interval (default 30). Also the worst-case delay
                    before a timer fires or work posted from another thread is
                    picked up.
+    :paste-timeout-ms  how long a read inside a bracketed paste waits for the
+                   next byte before giving the paste up as cut (default 100).
+                   Bytes of a paste arrive 1-7ms apart, so the default only ever
+                   trips when the end marker is never coming — but a big paste
+                   over a slow link can stall longer than that mid-stream, and is
+                   then delivered as two events: a :paste carrying :cut?, and
+                   whatever follows typed as keys. Raise this to ride out the
+                   stall, or watch :cut? and hold the half-paste until the rest
+                   arrives.
     :auto-quit-ms  stop after roughly this long — for smoke tests, which have no
                    one to press a key.
     :on-error      (fn [throwable phase]) called instead of ending the loop when
@@ -638,8 +660,9 @@
   The terminal is restored in a finally, so a handler that throws still leaves a
   usable shell behind."
   [opts mount-root!]
-  (let [{:keys [tick-ms auto-quit-ms quit-keys on-error on-mouse]
-         :or {tick-ms 30 quit-keys #{"ctrl+c" "ctrl+q"}}} opts
+  (let [{:keys [tick-ms paste-timeout-ms auto-quit-ms quit-keys on-error on-mouse]
+         :or {tick-ms 30 paste-timeout-ms default-paste-timeout-ms
+              quit-keys #{"ctrl+c" "ctrl+q"}}} opts
         win (curses/start!)
         screen (curses/ncurses-screen win)
         root (w/node :window {})]
@@ -653,7 +676,7 @@
         (pump-timers!)
         (let [d @w/dirty
               painted (if (= d painted) painted (do (repaint!) d))]
-          (when-let [event (read-event! win tick-ms)]
+          (when-let [event (read-event! win tick-ms paste-timeout-ms)]
             (press! event quit-keys))
           ;; elapsed is counted in ticks rather than read from a clock: the loop
           ;; has no other need for time, and a tick is a good enough unit for the
