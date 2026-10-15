@@ -10,8 +10,8 @@
  ;; project supplies the terminal widgets, layout, painting and the input loop,
  ;; and registers them through glimmer.backend.
  :deps {jolt-lang/glimmer {:git/url "https://github.com/jolt-lang/glimmer"
-                           :git/tag "v0.1.4"
-                           :git/sha "09b8ab08705fa1e6f20145c2e99eaaba9ea812cc"}}
+                           :git/tag "v0.1.6"
+                           :git/sha "d81af8fb2fa4164a2261db3c15fc7c93271dce60"}}
 
  ;; ncurses with wide-character support, bound natively via jolt.ffi.
  ;;
