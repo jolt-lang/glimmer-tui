@@ -28,7 +28,8 @@
     :focusable?  (fn [node]) -> boolean        the whole node, children included
     :activate    (fn [widget])                 Enter / Space / click
     :key         (fn [widget event]) -> handled?   see glimmer-tui.keys
-    :cursor      (fn [rect props state]) -> [x y]  where to park the terminal cursor
+    :cursor      (fn [rect props state]) -> [x y]  where to park the terminal cursor;
+                                               [x y false] parks it there hidden
     :init-state  (fn [props]) -> state         state a fresh widget starts with
     :sync-state  (fn [props state]) -> state   state after a re-render
     :bindings    (fn [props]) -> [[action spec] …]  what keys this widget

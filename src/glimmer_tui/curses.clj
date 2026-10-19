@@ -79,15 +79,22 @@
            (c/mvwaddnstr win y x s -1)
            (c/wattrset win c/A-NORMAL)))
        nil)
-     :cursor! (fn [x y visible?]
-                ;; start! sets leaveok, which lets ncurses skip the move to the
-                ;; window's cursor position on refresh. Clear it before placing a
-                ;; caret, or the wmove never reaches the physical cursor, and put
-                ;; it back when hiding so a caret-less UI keeps the saving.
-                (if visible?
-                  (do (c/leaveok win 0) (c/wmove win y x) (c/curs-set 1))
-                  (do (c/curs-set 0) (c/leaveok win 1)))
-                nil)
+     :cursor!
+     (fn [x y visible?]
+       ;; start! sets leaveok, which lets ncurses skip the move to the window's
+       ;; cursor position on refresh. It is cleared before every placement, or
+       ;; the wmove never reaches the physical cursor.
+       ;;
+       ;; A hidden cursor is placed too: at x, y when given, else where the last
+       ;; one was. Left to leaveok it stays wherever the last cell was painted —
+       ;; a border, a line that repaints every tick — and a terminal that keeps
+       ;; drawing it after curs_set(0) shows a block there (issue #20).
+       (when (and (some? x) (some? y)) (swap! state assoc :cursor [x y]))
+       (let [[px py] (:cursor @state [0 0])]
+         (c/leaveok win 0)
+         (c/wmove win py px)
+         (c/curs-set (if visible? 1 0)))
+       nil)
      :present! (fn [] (c/wnoutrefresh win) (c/doupdate) nil)}))
 
 ;; --- terminal lifecycle ------------------------------------------------------

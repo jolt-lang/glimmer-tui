@@ -83,6 +83,48 @@
   (let [s (paint [:vbox {} [:button {:label "go"}]] 10 1 :button)]
     (is (nil? (scr/cursor s)) "a button hides it")))
 
+;; a field whose keys have gone elsewhere says [x y false]: the cursor waits at
+;; its caret, hidden, rather than wherever painting ended
+(w/register-widget! ::held-entry
+                    (assoc (w/spec-for :entry)
+                           :cursor (fn [rect _ _] [(+ 2 (:x rect)) (:y rect) false])))
+
+(defn- cursor-calls
+  "Render `spec` with `focus-tag` focused and return every :cursor! call."
+  [spec cols rows focus-tag]
+  (let [calls (atom [])
+        screen (assoc (scr/buffer-screen cols rows)
+                      :cursor! (fn [x y v] (swap! calls conj [x y v]) nil))
+        build (fn build [[tag props & kids]]
+                (let [node (w/create! tag props)]
+                  (doseq [k kids] (w/append-child! tag node (build k)))
+                  node))
+        tree (l/layout (w/snapshot (build spec)) cols rows)
+        id (when focus-tag (:id (first (filter #(= focus-tag (:tag %)) (w/walk tree)))))]
+    (r/render! screen tree {:focus-id id})
+    @calls))
+
+(deftest a-widget-may-park-its-caret-out-of-sight
+  (is (nil? (scr/cursor (paint [:vbox {} [::held-entry {:text "abc"}]] 10 1 ::held-entry)))
+      "hidden")
+  (is (= [[2 0 false]] (cursor-calls [:vbox {} [::held-entry {:text "abc"}]] 10 1 ::held-entry))
+      "and placed at its caret")
+  (is (= [[nil nil false]] (cursor-calls [:vbox {} [:button {:label "go"}]] 10 1 :button))
+      "a widget with no caret leaves it where it last was"))
+
+(deftest a-clipped-caret-outside-its-rect-is-not-moved-there
+  ;; a partly visible widget whose caret lies in the cut-off part: parking the
+  ;; hidden cursor at those coords would put it on a neighbour, or off the window
+  (let [calls (atom [])
+        screen (assoc (scr/buffer-screen 10 3)
+                      :cursor! (fn [x y v] (swap! calls conj [x y v]) nil))
+        clipped (scr/clip screen {:x 0 :y 0 :w 4 :h 1})]
+    (scr/cursor! clipped 2 0 true)
+    (scr/cursor! clipped 6 0 true)
+    (scr/cursor! clipped 1 2 false)
+    (scr/cursor! clipped nil nil false)
+    (is (= [[2 0 true] [nil nil false] [nil nil false] [nil nil false]] @calls))))
+
 (deftest a-caret-hides-when-its-widget-scrolls-out-of-view
   (let [s (paint [:vbox {}
                   [:label {:label "hdr"}]
