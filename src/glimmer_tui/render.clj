@@ -72,7 +72,9 @@
 (defn cursor-position
   "Where the terminal cursor belongs: the focused widget decides, via its spec's
   :cursor fn. nil means hide it, which is what everything except a text entry
-  wants — a blinking cursor parked on a button reads as a glitch."
+  wants — a blinking cursor parked on a button reads as a glitch. `[x y false]`
+  means hide it there: a field that has let its keys go elsewhere keeps the
+  cursor at its caret, out of sight, rather than wherever painting ended."
   [tree focus-id]
   (when focus-id
     (when-let [n (find-node tree focus-id)]
@@ -105,8 +107,9 @@
     ;; The caret is placed through the focused node's visible rect, so it hides
     ;; when that widget has scrolled out of view rather than parking on whatever
     ;; row its raw layout coords name.
-    (if-let [pos (and @focus-vis (cursor-position tree (:focus-id ctx)))]
-      (scr/cursor! (scr/clip screen @focus-vis) (first pos) (second pos) true)
-      (scr/cursor! screen 0 0 false))
+    (if-let [[x y show?] (and @focus-vis (cursor-position tree (:focus-id ctx)))]
+      (scr/cursor! (scr/clip screen @focus-vis) x y (not (false? show?)))
+      ;; no place given: hidden, wherever the screen last put it
+      (scr/cursor! screen nil nil false))
     (scr/present! screen)
     nil))

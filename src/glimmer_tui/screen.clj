@@ -7,7 +7,7 @@
     :size     (fn [] [cols rows])
     :clear!   (fn [])
     :put!     (fn [x y text style])   ; style: {:fg :bg :bold :underline :reverse :dim}
-    :cursor!  (fn [x y visible?])
+    :cursor!  (fn [x y visible?])   ; x, y nil: hidden, wherever it last was
     :present! (fn [])                 ; flush the frame
 
   glimmer-tui.curses implements it over ncurses; `buffer-screen` below implements
@@ -60,10 +60,14 @@
                  (when (pos? room)
                    (put! scr px py (text/truncate s room) style)))))
            :cursor!
+           ;; a caret outside the rect is not parked there, even hidden: that
+           ;; spot belongs to a neighbour, or lies off the window
            (fn [cx cy visible?]
-             (cursor! scr cx cy (and visible?
-                                     (>= cx x) (< cx (+ x w))
-                                     (>= cy y) (< cy (+ y h))))))))
+             (if (and (some? cx) (some? cy)
+                      (>= cx x) (< cx (+ x w))
+                      (>= cy y) (< cy (+ y h)))
+               (cursor! scr cx cy visible?)
+               (cursor! scr nil nil false))))))
 
 ;; --- in-memory screen --------------------------------------------------------
 (defn buffer-screen

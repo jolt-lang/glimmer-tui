@@ -7,8 +7,9 @@
   Why it matters: start! sets leaveok(win, 1), which tells ncurses it need not
   move the physical cursor to the window's cursor position after a refresh. A
   :cursor! that only calls wmove would then be inert — the caret sits wherever
-  the last cell was painted. So placing a cursor must clear leaveok first, and
-  hiding one may put it back."
+  the last cell was painted. So placing a cursor clears leaveok first, and so
+  does hiding one: a terminal that still draws a hidden cursor (issue #20) shows
+  it wherever it was left."
   (:require [clojure.test :refer [deftest is]]
             [glimmer-tui.curses :as curses]
             [glimmer-tui.ffi :as c]
@@ -35,8 +36,15 @@
            (cursor-call-log #(scr/cursor! % 6 0 true)))
         "leaveok is cleared before the move, so doupdate lands the cursor")))
 
-(deftest hiding-the-cursor-restores-leaveok
+(deftest a-hidden-cursor-is-placed-not-left-where-painting-ended
   (let [win ::win]
-    (is (= [[:curs-set 0] [:leaveok win 1]]
-           (cursor-call-log #(scr/cursor! % 0 0 false)))
-        "a UI with no caret keeps the saving")))
+    (is (= [[:leaveok win 0] [:wmove win 2 5] [:curs-set 0]]
+           (cursor-call-log #(scr/cursor! % 5 2 false)))
+        "hidden at the place it was given")
+    (is (= [[:leaveok win 0] [:wmove win 0 6] [:curs-set 1]
+            [:leaveok win 0] [:wmove win 0 6] [:curs-set 0]]
+           (cursor-call-log #(do (scr/cursor! % 6 0 true) (scr/cursor! % nil nil false))))
+        "given no place, hidden where the last caret was")
+    (is (= [[:leaveok win 0] [:wmove win 0 0] [:curs-set 0]]
+           (cursor-call-log #(scr/cursor! % nil nil false)))
+        "never placed, hidden at the origin")))
