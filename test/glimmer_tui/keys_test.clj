@@ -50,6 +50,11 @@
     (is (= {:type :delete :mods #{:shift :alt}} (k/csi-key (map int "[3;4~"))))
     (is (= {:type :page-up :mods #{:ctrl}} (k/csi-key (map int "[5;5~"))))
     (is (nil? (k/csi-key (map int "[9;2~"))) "one it does not know")
+    (is (= {:type :f1 :mods #{:shift}} (k/csi-key (map int "[1;2P"))))
+    (is (= {:type :f5 :mods #{:shift}} (k/csi-key (map int "[15;2~"))))
+    (is (= {:type :f12 :mods #{:ctrl}} (k/csi-key (map int "[24;5~"))))
+    (is (= :key (k/escape-run (map int "[1;2P"))) "a function key is a key too")
+    (is (= :key (k/escape-run (map int "[1;2Z"))) "and so is any other complete run, to be dropped")
     (is (= :paste-start (k/escape-run (map int "[200~"))) "a paste marker is still a paste marker"))
   (testing "matched by name, the modifiers exactly"
     (is (k/match? (k/decode 402) "shift+right"))

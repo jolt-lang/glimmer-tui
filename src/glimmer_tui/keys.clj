@@ -136,12 +136,15 @@
 (def paste-end   [91 50 48 49 126])             ; [201~
 
 (def ^:private csi-finals
-  "The last byte of a cursor or editing key: A-D the arrows, H home, F end,
-  ~ a numbered key."
-  {65 :up 66 :down 67 :right 68 :left 72 :home 70 :end 126 :tilde})
+  "The last byte of a cursor, editing or function key: A-D the arrows, H home,
+  F end, P-S F1-F4, ~ a numbered key."
+  {65 :up 66 :down 67 :right 68 :left 72 :home 70 :end
+   80 :f1 81 :f2 82 :f3 83 :f4 126 :tilde})
 
 (def ^:private tilde-keys
-  {1 :home 2 :insert 3 :delete 4 :end 5 :page-up 6 :page-down 7 :home 8 :end})
+  {1 :home 2 :insert 3 :delete 4 :end 5 :page-up 6 :page-down 7 :home 8 :end
+   11 :f1 12 :f2 13 :f3 14 :f4 15 :f5 17 :f6 18 :f7 19 :f8 20 :f9 21 :f10
+   23 :f11 24 :f12})
 
 (defn csi-key
   "The key a run `[ p ; m X` spells — `codes` are the bytes after ESC — with its
@@ -154,7 +157,7 @@
         [p m] (map #(when-not (str/blank? %) (parse-long %)) (str/split s #";"))
         final (csi-finals (nth codes (dec n)))
         base (if (= :tilde final) (tilde-keys p) final)
-        bits (dec (or m 1))]
+        bits (max 0 (dec (or m 1)))]
     (when base
       {:type base
        :mods (cond-> #{}
@@ -185,14 +188,16 @@
           (every? #(<= 48 % 59) (subvec codes 2)) :partial
           :else nil))
       ;; a key with modifiers ncurses had no name for: ESC [ p ; m X, the
-      ;; cursor keys, or ESC [ p ; m ~ for the numbered ones. tmux sends
-      ;; ESC [ 1 ; 2 C for shift+→ where the terminfo entry has no kRIT.
+      ;; cursor and function keys, or ESC [ p ; m ~ for the numbered ones. tmux
+      ;; sends ESC [ 1 ; 2 C for shift+→ where the terminfo entry has no kRIT.
+      ;; Any final byte counts, so one csi-key has no name for is still a key
+      ;; (and dropped), not the alt chord and characters it was spelled with.
       (and (>= n 2) (= 91 (nth codes 0)) (every? #(<= 48 % 59) (subvec codes 1)))
       :partial
       (and (>= n 4) (= 91 (nth codes 0))
            (every? #(<= 48 % 59) (subvec codes 1 (dec n)))
            (some #{59} (subvec codes 1 (dec n)))
-           (csi-finals (nth codes (dec n))))
+           (<= 64 (nth codes (dec n)) 126))
       :key
       :else nil)))
 
