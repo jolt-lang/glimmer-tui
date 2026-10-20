@@ -45,11 +45,26 @@
    409 :mouse
    410 :resize})
 
+(def ^:private shifted-codes
+  "ncurses' codes for shifted keys, where terminfo names them (kRIT, kLFT…):
+  the key, and that shift was held. Where it does not name them they decoded as
+  printable characters — shift+→ typed ƒ."
+  {402 :right      ; KEY_SRIGHT
+   393 :left       ; KEY_SLEFT
+   337 :up         ; KEY_SR
+   336 :down       ; KEY_SF
+   391 :home       ; KEY_SHOME
+   386 :end        ; KEY_SEND
+   383 :delete     ; KEY_SDC
+   396 :page-down  ; KEY_SNEXT
+   398 :page-up})  ; KEY_SPREVIOUS
+
 (defn decode
   "The key event for ncurses key `code`."
   [code]
   (let [t (code->type code)]
     (cond
+      (shifted-codes code) {:type (shifted-codes code) :mods #{:shift} :code code}
       (= :ctrl-space t) {:type :ctrl :ch \space :code code}
       (= :space t)      {:type :space :ch \space :code code}
       t                 {:type t :code code}
@@ -120,11 +135,42 @@
 (def paste-start [91 50 48 48 126])             ; [200~
 (def paste-end   [91 50 48 49 126])             ; [201~
 
+(def ^:private csi-finals
+  "The last byte of a cursor, editing or function key: A-D the arrows, H home,
+  F end, P-S F1-F4, ~ a numbered key."
+  {65 :up 66 :down 67 :right 68 :left 72 :home 70 :end
+   80 :f1 81 :f2 82 :f3 83 :f4 126 :tilde})
+
+(def ^:private tilde-keys
+  {1 :home 2 :insert 3 :delete 4 :end 5 :page-up 6 :page-down 7 :home 8 :end
+   11 :f1 12 :f2 13 :f3 14 :f4 15 :f5 17 :f6 18 :f7 19 :f8 20 :f9 21 :f10
+   23 :f11 24 :f12})
+
+(defn csi-key
+  "The key a run `[ p ; m X` spells — `codes` are the bytes after ESC — with its
+  modifiers as `:mods`, where m - 1 is a mask of shift 1, alt 2, ctrl 4. nil for
+  a run this does not know, which is then dropped rather than typed."
+  [codes]
+  (let [codes (vec codes)
+        n (count codes)
+        s (apply str (map char (subvec codes 1 (dec n))))
+        [p m] (map #(when-not (str/blank? %) (parse-long %)) (str/split s #";"))
+        final (csi-finals (nth codes (dec n)))
+        base (if (= :tilde final) (tilde-keys p) final)
+        bits (max 0 (dec (or m 1)))]
+    (when base
+      {:type base
+       :mods (cond-> #{}
+               (bit-test bits 0) (conj :shift)
+               (bit-test bits 1) (conj :alt)
+               (bit-test bits 2) (conj :ctrl))})))
+
 (defn escape-run
   "What the codes read after an ESC have made so far: :paste-start, :paste-end,
-  :mouse for a complete SGR mouse report, :partial while the run could still
-  become one of those, or nil for a run that is none — which the event loop hands
-  back as the alt chord and the keys it really was."
+  :mouse for a complete SGR mouse report, :key for a modified cursor or editing
+  key ncurses had no name for, :partial while the run could still become one of
+  those, or nil for a run that is none — which the event loop hands back as the
+  alt chord and the keys it really was."
   [codes]
   (let [codes (vec codes)
         n (count codes)
@@ -141,6 +187,18 @@
           (or (= last 77) (= last 109)) :mouse   ; M or m
           (every? #(<= 48 % 59) (subvec codes 2)) :partial
           :else nil))
+      ;; a key with modifiers ncurses had no name for: ESC [ p ; m X, the
+      ;; cursor and function keys, or ESC [ p ; m ~ for the numbered ones. tmux
+      ;; sends ESC [ 1 ; 2 C for shift+→ where the terminfo entry has no kRIT.
+      ;; Any final byte counts, so one csi-key has no name for is still a key
+      ;; (and dropped), not the alt chord and characters it was spelled with.
+      (and (>= n 2) (= 91 (nth codes 0)) (every? #(<= 48 % 59) (subvec codes 1)))
+      :partial
+      (and (>= n 4) (= 91 (nth codes 0))
+           (every? #(<= 48 % 59) (subvec codes 1 (dec n)))
+           (some #{59} (subvec codes 1 (dec n)))
+           (<= 64 (nth codes (dec n)) 126))
+      :key
       :else nil)))
 
 (defn- sgr-text
@@ -233,14 +291,21 @@
 (defn- match-one? [event spec]
   (cond
     (nil? spec) false
-    ;; a keyword names an event type directly: :page-up, :enter
-    (keyword? spec) (= spec (:type event))
+    ;; a keyword names an event type directly: :page-up, :enter. A modified key
+    ;; is not the plain one, so :right does not match shift+right.
+    (keyword? spec) (and (= spec (:type event)) (empty? (:mods event)))
     (integer? spec) (= spec (:code event))
     :else
     (let [{:keys [ctrl shift alt base]} (parse spec)]
       (cond
         ;; shift+tab is the one shifted key a terminal reports distinctly
         (and shift (= :tab base)) (= :back-tab (:type event))
+        ;; a named key: the modifiers it was pressed with (csi-key's, ncurses'
+        ;; shifted codes, or none) must be the ones asked for — so "right" is
+        ;; not shift+right, and shift+right is not "right"
+        (and (keyword? base) (= base (:type event)))
+        (= (or (:mods event) #{})
+           (cond-> #{} shift (conj :shift) alt (conj :alt) ctrl (conj :ctrl)))
         ;; alt (meta) arrives as ESC then the key; the event loop pairs them up
         alt (and (= :alt (:type event))
                  (if (keyword? base)

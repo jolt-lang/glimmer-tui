@@ -143,6 +143,20 @@
   [codes]
   (events-with (terminal codes) 100))
 
+(deftest a-modified-key-ncurses-did-not-name-is-one-key-not-typed-text
+  ;; tmux sends ESC [ 1 ; 2 C for shift+→; under a terminfo entry with no kRIT
+  ;; (macOS's tmux-256color) ncurses hands it over byte by byte, and it came
+  ;; out as alt+[ and the characters 1;2C, typed into whatever had the focus
+  (is (= [{:type :right :mods #{:shift}}] (events (cons 27 (map int "[1;2C")))))
+  (is (= [{:type :left :mods #{:ctrl}} {:type :char :ch \x :code 120}]
+         (events (concat [27] (map int "[1;5D") [120])))
+      "and the key after it is its own")
+  (is (= [{:type :unknown :code 27}] (events (cons 27 (map int "[9;2~"))))
+      "one it does not know is dropped, not typed")
+  (is (= [{:type :f1 :mods #{:shift}}] (events (cons 27 (map int "[1;2P")))))
+  (is (= [{:type :unknown :code 27}] (events (cons 27 (map int "[1;2Z"))))
+      "nor is one with a final byte it has no name for"))
+
 (defn- slow-terminal
   "A scripted terminal over a slow link: `entries` are [delay code] pairs, and a
   code is answered only to a read willing to wait its delay. One that will not
