@@ -238,6 +238,13 @@ overridden per widget with `:keys`, and rendered:
 The `:help` widget with no `:bindings` of its own reads them off the live tree,
 which means the help bar cannot drift from what the keys actually do.
 
+A key held with a modifier matches by name whatever way it arrived: `"shift+right"`
+is the arrow ncurses named (`KEY_SRIGHT`) and the `ESC [ 1 ; 2 C` tmux sends where
+the terminfo entry has no `kRIT`. The modifiers are matched exactly, so a plain
+`"right"` is not shift+right and shift+right is not `"right"`. A modified key the
+terminal spells with a sequence ncurses has no name for — and that this does not
+know either — is dropped, never typed as the bytes it was made of.
+
 A key is offered to the focused widget first, then to each of its ancestors —
 which is how `Page Down` reaches the scroll container a focused button happens to
 be sitting in, and how an application binds a key of its own:

@@ -601,6 +601,9 @@
            ;; an end marker with nothing to end: the paste is already over
            :paste-end nil
            :mouse (keys/sgr-mouse codes)
+           ;; a key ncurses had no name for; one this does not know either is
+           ;; dropped, never typed as the bytes it was
+           :key (or (keys/csi-key codes) {:type :unknown :code 27})
            (if-let [next-code (first codes)]
              (do
                (swap! held-over into (rest codes))
