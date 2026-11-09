@@ -51,8 +51,11 @@ Nothing newer is bound on purpose: the 6.1 extended-colour entry points are
 absent from Apple's build. That is not a limit on what you can write — a `#ff6432`
 prop works fine (see [Colour](#colour)) — only on how it reaches the terminal.
 
-**jolt 0.7.24 or newer**, though, because of how jolt is linked rather than
-anything either project does at runtime. Chez's expression editor links ncurses
+**jolt 0.8.0 or newer** (`deps.edn` declares `:jolt/min-version "0.8.0"`):
+`jolt.ffi/write` takes the value before the offset from 0.8.0 on, and an older
+runtime would write to the wrong place rather than fail. Before that, 0.7.24 was
+already the floor because of how jolt is linked rather than anything either
+project does at runtime. Chez's expression editor links ncurses
 into the jolt binary, and until 0.7.24 those symbols were exported: the
 executable is searched before any library loaded through the FFI, so the ncurses
 this backend binds had its own internal calls bound back into the kernel's older
