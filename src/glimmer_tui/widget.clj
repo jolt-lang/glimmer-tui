@@ -31,14 +31,19 @@
     :cursor      (fn [rect props state]) -> [x y]  where to park the terminal cursor;
                                                [x y false] parks it there hidden
     :init-state  (fn [props]) -> state         state a fresh widget starts with
-    :sync-state  (fn [props state]) -> state   state after a re-render
+    :sync-state  (fn [props state]) -> state   state after a re-render. Given
+                                               only the props that changed since
+                                               the last render (patch-props!), so
+                                               a prop the app repeats never
+                                               overwrites what the user edited
     :bindings    (fn [props]) -> [[action spec] …]  what keys this widget
                                                answers to, for a help bar to render
     :derive-state (fn [props state ctx]) -> state   state that depends on the
                                                loop rather than on props — what
                                                is focused, what keys are live.
                                                Applied before every layout."
-  (:require [glimmer-tui.text :as text]))
+  (:require [glimmer.backend :as b]
+            [glimmer-tui.text :as text]))
 
 ;; --- widget nodes ------------------------------------------------------------
 (defonce ^:private next-id (atom 0))
@@ -182,6 +187,23 @@
       (swap! w update :state #(sync props %)))
     (touch!)
     nil))
+
+(defn patch-props!
+  "The backend's :patch-props!: the re-render path, knowing the props the last
+  render applied. The node takes `new-props` whole, but its :sync-state sees only
+  the props that changed, so an entry the user is typing in, or a list cursor the
+  user moved, is overwritten only when the app's value actually changes, never by
+  a re-render that repeats the old one. An unchanged render touches nothing and
+  so costs no repaint."
+  [tag w old-props new-props]
+  (when (not= old-props new-props)
+    (let [props (with-orientation tag new-props)
+          tag (normalize-tag tag)]
+      (swap! w assoc :props props)
+      (when-let [sync (:sync-state (spec-for tag))]
+        (swap! w update :state #(sync (b/changed-props old-props new-props) %)))
+      (touch!)))
+  nil)
 
 (defn- index-of [children child]
   (first (keep-indexed (fn [i c] (when (= (:id @c) (:id @child)) i)) children)))
