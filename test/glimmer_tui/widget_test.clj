@@ -90,6 +90,23 @@
       (is (= "reset" (:value (:state @e))))
       (is (= 5 (:cursor (:state @e)))))))
 
+(deftest patch-props-overwrites-an-edit-only-when-the-app-changes-the-value
+  ;; Datastar's rule: compare with the value the app sent last, not with what
+  ;; the user typed. A re-render repeating the old value keeps the edit.
+  (let [e (w/create! :entry {:text "abc"})]
+    (type-into! e \d)
+    (is (= "abcd" (:value (:state @e))))
+    (w/patch-props! :entry e {:text "abc"} {:text "abc" :placeholder "p"})
+    (is (= "abcd" (:value (:state @e))) "the edit survived a re-render with the old value")
+    (is (= "p" (:placeholder (:props @e))))
+    (w/patch-props! :entry e {:text "abc" :placeholder "p"} {:text "xyz" :placeholder "p"})
+    (is (= "xyz" (:value (:state @e))) "a new value from the app replaces it")))
+
+(deftest an-unchanged-patch-costs-no-repaint
+  (let [b (w/create! :label {:label "x"}) before @w/dirty]
+    (w/patch-props! :label b {:label "x"} {:label "x"})
+    (is (= before @w/dirty))))
+
 ;; --- focus and hit testing ---------------------------------------------------
 (deftest the-focus-ring-is-tree-order-over-focusable-widgets
   (let [box (w/create! :vbox {})
