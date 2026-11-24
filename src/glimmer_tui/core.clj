@@ -30,6 +30,9 @@
   bracketed-paste mode, and the wrapper it sends is decoded here into a single
   {:type :paste :text \"...\"} event, dispatched down the same path. That is what
   keeps a pasted newline from pressing Return halfway through a stack trace."
+  ;; run! below is the backend's :run, private to this namespace; it shadows
+  ;; clojure.core/run!, which nothing here uses
+  (:refer-clojure :exclude [run!])
   (:require [clojure.string :as str]
             [glimmer.backend :as b]
             [glimmer-tui.curses :as curses]
